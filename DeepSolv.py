@@ -416,8 +416,6 @@ if __name__ == "__main__":
     x.use_yates_structures()
     
     
-    #sys.exit()
-
 
     predictions = pandas.DataFrame()
 
@@ -481,8 +479,6 @@ if __name__ == "__main__":
                 print("(yates' higher, overoptimized)")
         
         
-        
-        
         X, Y = [], []
         for i in optimization["deprot_aq"]:
             Final = optimization["deprot_aq"][i]["Final"]
@@ -499,8 +495,9 @@ if __name__ == "__main__":
 
     for index in predictions.index:
         plt.text(predictions.at[index, "Pred"], predictions.at[index,"Target"], str(index))
-    plt.scatter(predictions["Pred"], predictions["Target"])
-    plt.scatter(predictions["Pred"], predictions["Yates"])
+    plt.scatter(predictions["Pred"], predictions["Target"], label="vs DFT")
+    plt.scatter(predictions["Pred"], predictions["Yates"], label="vs Yates")
+    plt.legend()
     plt.plot([21, 35], [21, 35], lw=1, color="black")
     print("DFT RMSE:", mean_squared_error(predictions["Pred"], predictions["Target"], squared=False))
     print("Yates RMSE:", mean_squared_error(predictions["Pred"], predictions["Yates"], squared=False))
