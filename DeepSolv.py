@@ -93,11 +93,13 @@ class pKa:
     def load_yates(self):
         self.yates_mols = {}
         for mol_index in self.mol_indices:
+            dft_folder = os.path.join(os.path.dirname(__file__), "DFT")
+            
             self.yates_mols[mol_index] = {}
-            self.yates_mols[mol_index]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}.out")}
-            self.yates_mols[mol_index]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}+.out")}
-            self.yates_mols[mol_index]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}_gasSP.out")}
-            self.yates_mols[mol_index]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}+_gasSP.out")}
+            self.yates_mols[mol_index]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}.out"))}
+            self.yates_mols[mol_index]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}+.out"))}
+            self.yates_mols[mol_index]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}_gasSP.out"))}
+            self.yates_mols[mol_index]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}+_gasSP.out"))}
             
             for state in self.yates_mols[mol_index]:
                 self.yates_mols[mol_index][state]["orca_parse"].parse_coords()
@@ -107,7 +109,7 @@ class pKa:
                                                            self.yates_mols[mol_index][state]["orca_parse"].coords[-1])
                 try:
                     self.yates_mols[mol_index][state]["ase"].calc = self.Gmodels[state].SUPERCALC
-                except KeyError:
+                except:
                     warnings.warn("Couldnt load model for "+state, MyWarning)
                 self.yates_mols[mol_index][state]["Yates pKa"] = self.pKas.at[mol_index, "Yates"]
 
@@ -343,7 +345,6 @@ class pKa:
                                                   maxAttempts=10000,
                                                   forceTol=0.01,
                                                   pruneRmsThresh = pruneRmsThresh)
-                #print("NumConformers:", mol.GetNumConformers(), "pruneRmsThresh:", pruneRmsThresh)
                 clearConfs = False
                 pbar.update(mol.GetNumConformers() - NumConfs)
                 NumConfs = mol.GetNumConformers()
@@ -351,8 +352,6 @@ class pKa:
         asemol_guesses = []
         for i in range(mol.GetNumConformers()):
             asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
-            #Chem.MolToXYZFile(mol, f"{work_folder}/{idx}_{state}_input_{i}.xyz", confId=i)
-            #asemol_guesses.append(read(f"{work_folder}/{idx}_{state}_input_{i}.xyz"))
             if i > 0:
                 minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
                 asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
@@ -378,8 +377,8 @@ class pKa:
         
     def __init__(self):
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
-        self.pKas = pandas.read_csv("DFT_Data_pKa.csv", index_col=0)
-        self.radii = pandas.read_csv("Alvarez2013_vdwradii.csv", index_col=0)
+        self.pKas = pandas.read_csv(os.path.join(os.path.dirname(__file__), "DFT_Data_pKa.csv"), index_col=0)
+        self.radii = pandas.read_csv(os.path.join(os.path.dirname(__file__), "Alvarez2013_vdwradii.csv"), index_col=0)
 
 
 if __name__ == "__main__":
