@@ -11,7 +11,7 @@ import torchani
 import json
 import pandas
 import glob
-import os, itertools, tqdm, pickle
+import os, itertools, tqdm, pickle, warnings, sys
 import numpy as np
 from colour import Color
 import matplotlib.pyplot as plt
@@ -22,6 +22,11 @@ from rdkit.Chem import rdDepictor
 import orca_parser 
 from _DNN import *
 
+
+class MyWarning(DeprecationWarning):
+    pass
+
+warnings.simplefilter("once", MyWarning)
 pandas.set_option('display.max_columns', 20)
 pandas.set_option('display.width', 1000)
 
@@ -86,39 +91,15 @@ class pKa:
             self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")            
             print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
-    def load_next_gen_models(self, folder):
-        self.Gmodels = {}
-        for typ in ["G_gas", "G_aq"]:#, "G_solv"]:
-            checkpoints = glob.glob(f"{folder}/{typ}*/best.pt")
-            print(checkpoints)
-            if len(checkpoints)==0:
-                continue
-            self_energy = os.path.join(os.path.dirname(checkpoints[0]), "Self_Energies.csv")
-            training_config = os.path.join(os.path.dirname(checkpoints[0]), "training_config.json")
-            # Load traning_config to keep ANI parameters consistent
-            with open(training_config) as jin:
-                training_config = json.load(jin)
-            #Read in atomic self energies and the species order (elements involved in model)
-            SelfE = pandas.read_csv(self_energy, index_col=0)
-            species_order = SelfE.index
-            # define the model based on the information read in above
-            self.Gmodels[typ] = IrDNN(SelfE, verbose=False, device=device, 
-                                      training_config=training_config,
-                                      next_gen=True)
-            self.Gmodels[typ].GenModel(species_order, aev_dim=training_config["aev_dim"])
-            #Locate the pre=trained model's best epoch and load it as a checkpoint instance. 
-            #This provides the model with the best weigths and baises from training.
-            for checkpoint in checkpoints:
-                self.Gmodels[typ].load_checkpoint(checkpoint, typ="Energy")
 
     def load_yates(self):
         self.yates_mols = {}
         for idx in self.mol_indices:
             self.yates_mols[idx] = {}
-            self.yates_mols[idx]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(f"BuildDataset/ValidationDS/DFT_water_outs/{idx}.out")}
-            self.yates_mols[idx]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(f"BuildDataset/ValidationDS/DFT_water_outs/{idx}+.out")}
-            self.yates_mols[idx]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(f"BuildDataset/ValidationDS/RossFreq/{idx}_gasSP.out")}
-            self.yates_mols[idx]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(f"BuildDataset/ValidationDS/RossFreq/{idx}+_gasSP.out")}
+            self.yates_mols[idx]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}.out")}
+            self.yates_mols[idx]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}+.out")}
+            self.yates_mols[idx]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}_gasSP.out")}
+            self.yates_mols[idx]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}+_gasSP.out")}
             
             for state in self.yates_mols[idx]:
                 self.yates_mols[idx][state]["orca_parse"].parse_coords()
@@ -129,29 +110,9 @@ class pKa:
                 try:
                     self.yates_mols[idx][state]["ase"].calc = self.Gmodels[state].SUPERCALC
                 except KeyError:
-                    print(f"Couldnt load model for {state}")
-                pKa_state = state.capitalize().replace("_aq", "_solv").replace("_gas", "")
-                #self.yates_mols[idx][state]["G"] = self.pKas.at[str(idx), pKa_state] * 627.5
-                self.yates_mols[idx][state]["Yates pKa"] = self.pKas.at[str(idx), "pKa"]
+                    warnings.warn("Couldnt load model for "+state, MyWarning)
+                self.yates_mols[idx][state]["Yates pKa"] = self.pKas.at[idx, "Yates"]
 
-    def load_input_structs(self):
-        self.input_structures = {}
-        for idx in self.mol_indices:
-            self.input_structures[idx] = {}
-            for state in self.yates_mols[idx]:
-                protonation = state.split("_")[0]
-                if os.path.exists(f"Work/Best_{idx}_{state}.xyz"):
-                    print("Reloading from Work/")
-                    self.input_structures[idx][state] = read(f"Work/Best_{idx}_{state}.xyz", index=-1)
-                else:
-                    self.input_structures[idx][state] = read(f"BuildDataset/ValidationDS/Input_structures/{idx}_{protonation}.xyz")
-                
-                try:
-                    self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
-                except :
-                    #print(f"Couldnt load model for {state}")
-                    pass
-    
     def use_yates_structures(self):
         self.input_structures = {}
         for idx in self.yates_mols:
@@ -161,7 +122,7 @@ class pKa:
                 try:
                     self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
                 except KeyError:
-                    print(f"Failed to set Gmodels[{state}] for {idx} {state}")
+                    warnings.warn("Failed to set Gmodels["+state+"]", MyWarning)
         
     def get_rmsd(self, idx: int, state: str):
         assert self.yates_mols[idx][state]["ase"].get_chemical_symbols() == self.input_structures[idx][state].get_chemical_symbols(), "Cant measure RMSD if the atom order isnt the same"
@@ -184,7 +145,7 @@ class pKa:
         Prot_gas = self.input_structures[idx]["prot_gas"].get_potential_energy()*23.06035
     
         for state in self.input_structures[idx]:
-            #print(state, "err:", (self.input_structures[idx][state].get_potential_energy()*23.06035)-(self.pKas.at[str(idx), state] * 627.5))
+            #print(state, "err:", (self.input_structures[idx][state].get_potential_energy()*23.06035)-(self.pKas.at[idx, state] * 627.5))
             pass
 
         # 2 methods of calculating pKa
@@ -195,7 +156,7 @@ class pKa:
         dG_aq = dGgas + dG_solv_A + dG_solv_H  - dG_solv_HA
         pKa_1 = dG_aq/(2.303*0.0019872036*298.15)
         
-        self.pKas.at[str(idx), "pKa_pred_1"] = pKa_1
+        self.pKas.at[idx, "pKa_pred_1"] = pKa_1
         return pKa_1
 
     
@@ -220,8 +181,8 @@ class pKa:
     def find_connections(self, idx, state):
         # Determine the things we are going to vary
         mol = self.input_structures[idx][state].copy()
-        if os.path.exists(f"Work/{idx}_{state}_Connections.json"):
-            with open(f"Work/{idx}_{state}_Connections.json") as jin:
+        if os.path.exists(f"{work_folder}/{idx}_{state}_Connections.json"):
+            with open(f"{work_folder}/{idx}_{state}_Connections.json") as jin:
                 Connections = json.load(jin)
         else:
             Connections = {}
@@ -258,7 +219,7 @@ class pKa:
                                "s0": mol[i].symbol, "s1": mol[j].symbol, "s2": mol[k].symbol, "s3": mol[l].symbol,
                                "val": dihedral, "Min": dihedral-40, "Max": dihedral+40,
                                "fineness": 100}
-            with open(f"Work/{idx}_{state}_Connections.json", 'w') as jout:
+            with open(f"{work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
                 json.dump(Connections, jout, indent=4)
         return Connections
     
@@ -315,7 +276,6 @@ class pKa:
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
             
-            #Fmax.append(Forces.max())
             if len(Y) > 5:
                 Grad = np.gradient(Y-Y[0])[-1]
                 # Gromacs algorithm
@@ -347,32 +307,116 @@ class pKa:
             plt.tight_layout()
             plt.savefig(f"{work_folder}/Min_{idx}_{state}.png")
             plt.show()
-        
         return Y, Fmax
+    
 
-
+    def generate_confs(self, idx, state):
+        Connections = self.find_connections(idx, state)
+        asemol = self.yates_mols[idx][state]["ase"].copy()
+        atom_symbols = asemol.get_chemical_symbols()
+        premol = Chem.RWMol()
+        # Add atoms to the molecule
+        for symbol, [xpos, ypos, zpos] in zip(atom_symbols, asemol.positions):
+            atom = Chem.Atom(symbol)
+            atom.SetDoubleProp("x", xpos)
+            atom.SetDoubleProp("y", ypos)
+            atom.SetDoubleProp("z", zpos)
+            premol.AddAtom(atom)
+        
+        for connection in Connections.values():
+            if connection["Type"] != "Bond":
+                continue
+            bond = Chem.BondType.SINGLE
+            if connection["a0"] > connection["a1"]: # cant add the same one twice backwards
+                continue
+            if connection["s0"] == connection["s1"] == "C": # C=C
+                # Check if it is aromatic
+                possible_angles = [angle for angle in Connections.values() if angle["Type"] == "Angle" and angle["a0"] == connection["a0"] and angle["a1"] == connection["a1"]]
+                CCC_angles = [angle for angle in possible_angles if angle["s0"] == angle["s1"] == angle["s2"] =="C"]
+                if len(CCC_angles) > 0:
+                    angles = np.array([angle["val"] for angle in CCC_angles])
+                    if (abs((angles-120)) < 5).any():
+                        bond = Chem.BondType.AROMATIC
+                if bond != Chem.BondType.AROMATIC:
+                    if connection["val"] < 1.44:
+                        bond = Chem.BondType.DOUBLE
+                    else:
+                        bond = Chem.BondType.SINGLE    
+            else:
+                bond = Chem.BondType.SINGLE
+            premol.AddBond(connection["a0"], connection["a1"], bond)
+            print("Bonding:", connection["a0"], connection["a1"], connection["s0"], connection["s1"], bond)
+        mol =  premol.GetMol()
+        rdDepictor.Compute2DCoords(mol)
+        
+        print("Generating initial guesses")
+        clearConfs = True
+        NumConfs = 0
+        pruneRmsThresh = 1.0
+        with tqdm.tqdm(total = 1000) as pbar:
+            while NumConfs < 1000:
+                cids = AllChem.EmbedMultipleConfs(mol, # This doesnt include hydrogens in the RMS calculation!!
+                                                  clearConfs=clearConfs, 
+                                                  numConfs=20, 
+                                                  useBasicKnowledge = clearConfs,
+                                                  maxAttempts=10000,
+                                                  forceTol=0.01,
+                                                  pruneRmsThresh = pruneRmsThresh)
+                #print("NumConformers:", mol.GetNumConformers(), "pruneRmsThresh:", pruneRmsThresh)
+                clearConfs = False
+                pbar.update(mol.GetNumConformers() - NumConfs)
+                NumConfs = mol.GetNumConformers()
+                pruneRmsThresh *= 0.95
+        asemol_guesses = []
+        for i in range(mol.GetNumConformers()):
+            asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
+            #Chem.MolToXYZFile(mol, f"{work_folder}/{idx}_{state}_input_{i}.xyz", confId=i)
+            #asemol_guesses.append(read(f"{work_folder}/{idx}_{state}_input_{i}.xyz"))
+            if i > 0:
+                minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
+                asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
+            else:
+                asemol_guesses[0].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
+        return asemol_guesses
+            
+    def filter_confs(self, idx, state, asemol_guesses):
+        print("Evaluating initial guesses")
+        x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
+        x.Gmodels[state].MakeTensors()
+        G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=True) # return_all is about all models, not all conformers            
+        # We want conformer guess that not only low energy but also that the ensemble of models are confident in
+        rng = G.max(axis=0)-G.min(axis=0)
+        mean = G.mean(axis=0)
+        
+        # Filter the 1000+ conformer starting points to low energy and high confidence
+        indices = np.argsort(rng)[:15]
+        indices = np.hstack((indices, np.argsort(mean)[:15]))
+        indices = np.unique(indices)
+        for i in range(len(indices)):
+            asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
+        return indices
+        
     def __init__(self):
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
         self.pKas = pandas.read_csv("DFT_Data_pKa.csv", index_col=0)
-        self.errors = pandas.DataFrame()
         self.radii = pandas.read_csv("Alvarez2013_vdwradii.csv", index_col=0)
-        self.fmax = 0.001
-        self.opt_maxsteps = 30
-        self.opt_maxstep = 0.01
-        
+
 
 
 if __name__ == "__main__":
     G_H = -4.39 # kcal/mol
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
-    #x.load_models("TrainDNN/models/", "best.pt"); work_folder = "Work/"
-    x.load_models("TrainDNN/models/", "best_L1.pt"); work_folder = "Work/L1"
+    #x.load_models("TrainDNN/model/", "best.pt"); work_folder = "Calculations/MSE"
+    x.load_models("TrainDNN/model/", "best_L1.pt"); work_folder = "Calculations/L1"
     os.makedirs(work_folder, exist_ok=True)
     print(x.Gmodels)
+    assert "prot_aq" in x.Gmodels
     x.load_yates()
-    x.load_input_structs()
+    x.use_yates_structures()
     
+    
+    #sys.exit()
 
 
     predictions = pandas.DataFrame()
@@ -386,95 +430,8 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
-                Connections = x.find_connections(idx, state)
-                
-                asemol = x.yates_mols[idx][state]["ase"].copy()
-                
-                atom_symbols = asemol.get_chemical_symbols()
-                premol = Chem.RWMol()
-                # Add atoms to the molecule
-                for symbol, [xpos, ypos, zpos] in zip(atom_symbols, asemol.positions):
-                    atom = Chem.Atom(symbol)
-                    atom.SetDoubleProp("x", xpos)
-                    atom.SetDoubleProp("y", ypos)
-                    atom.SetDoubleProp("z", zpos)
-                    premol.AddAtom(atom)
-                
-                for connection in Connections.values():
-                    if connection["Type"] != "Bond":
-                        continue
-                    bond = Chem.BondType.SINGLE
-                    if connection["a0"] > connection["a1"]: # cant add the same one twice backwards
-                        continue
-                    if connection["s0"] == connection["s1"] == "C": # C=C
-                        # Check if it is aromatic
-                        possible_angles = [angle for angle in Connections.values() if angle["Type"] == "Angle" and angle["a0"] == connection["a0"] and angle["a1"] == connection["a1"]]
-                        CCC_angles = [angle for angle in possible_angles if angle["s0"] == angle["s1"] == angle["s2"] =="C"]
-                        if len(CCC_angles) > 0:
-                            angles = np.array([angle["val"] for angle in CCC_angles])
-                            if (abs((angles-120)) < 5).any():
-                                bond = Chem.BondType.AROMATIC
-                        if bond != Chem.BondType.AROMATIC:
-                            if connection["val"] < 1.44:
-                                bond = Chem.BondType.DOUBLE
-                            else:
-                                bond = Chem.BondType.SINGLE    
-                    else:
-                        bond = Chem.BondType.SINGLE
-                    premol.AddBond(connection["a0"], connection["a1"], bond)
-                    print("Bonding:", connection["a0"], connection["a1"], connection["s0"], connection["s1"], bond)
-                mol =  premol.GetMol()
-                rdDepictor.Compute2DCoords(mol)
-                #rdDistGeom.EmbedMolecule(done)
-                
-                print("Generating initial guesses")
-                clearConfs = True
-                NumConfs = 0
-                pruneRmsThresh = 1.0
-                with tqdm.tqdm(total = 1000) as pbar:
-                    while NumConfs < 1000:
-                        cids = AllChem.EmbedMultipleConfs(mol, # This doesnt include hydrogens in the RMS calculation!!
-                                                          clearConfs=clearConfs, 
-                                                          numConfs=20, 
-                                                          useBasicKnowledge = clearConfs,
-                                                          maxAttempts=10000,
-                                                          forceTol=0.01,
-                                                          pruneRmsThresh = pruneRmsThresh)
-                        #print("NumConformers:", mol.GetNumConformers(), "pruneRmsThresh:", pruneRmsThresh)
-                        clearConfs = False
-                        pbar.update(mol.GetNumConformers() - NumConfs)
-                        NumConfs = mol.GetNumConformers()
-                        pruneRmsThresh *= 0.95
-                #uff = AllChem.UFFOptimizeMolecule(mol, maxIters=100)
-                #print("UFF:", uff)
-                asemol_guesses = []
-                for i in range(mol.GetNumConformers()):
-                    asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
-                    #Chem.MolToXYZFile(mol, f"{work_folder}/{idx}_{state}_input_{i}.xyz", confId=i)
-                    #asemol_guesses.append(read(f"{work_folder}/{idx}_{state}_input_{i}.xyz"))
-                    if i > 0:
-                        minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
-                        asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
-                    else:
-                        asemol_guesses[0].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
-                
-                
-                print("Evaluating initial guesses")
-                x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
-                x.Gmodels[state].MakeTensors()
-                G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=True) # return_all is about all models, not all conformers            
-                # We want conformer guess that not only low energy but also that the ensemble of models are confident in
-                rng = G.max(axis=0)-G.min(axis=0)
-                mean = G.mean(axis=0)
-                
-                # Filter the 1000+ conformer starting points to low energy and high confidence
-                indices = np.argsort(rng)[:15]
-                indices = np.hstack((indices, np.argsort(mean)[:15]))
-                indices = np.unique(indices)
-                for i in range(len(indices)):
-                    asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
-               
-
+                asemol_guesses = x.generate_confs(idx, state)
+                indices = x.filter_confs(idx, state, asemol_guesses)
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
@@ -509,10 +466,10 @@ if __name__ == "__main__":
         G_deprot = min(deprot_Gs)
         G_prot = min(prot_Gs)
         guess_pka = ((G_deprot) - ((G_prot) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-        print("Final Min: guess_pka:", guess_pka, "vs", x.pKas.at[str(idx), "pKa"])
+        print("Final Min: guess_pka:", guess_pka, "vs", x.pKas.at[idx, "pKa"])
         predictions.at[idx, "Pred"] = guess_pka
-        predictions.at[idx, "Target"] = x.pKas.at[str(idx), "pKa"]
-        predictions.at[idx, "Yates"] = x.pKas.at[str(idx), "Yates"]
+        predictions.at[idx, "Target"] = x.pKas.at[idx, "pKa"]
+        predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
      
         
         for label, G in zip(["deprot_aq", "prot_aq"], [G_deprot, G_prot]):
