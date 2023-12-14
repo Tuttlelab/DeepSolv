@@ -515,7 +515,7 @@ class IrDNN:
                 print("TO USE MakeTensors all species must have the same number of Atoms!!")
                 return False
             if periodic_table_index:
-                Multi_Species = np.vstack((Multi_Species, M.get_atomic_numbers()))
+                Multi_Species = np.vstack((Multi_Species, np.array(M.get_atomic_numbers())))
             else:
                 Multi_Species = np.vstack((Multi_Species, self.species_to_tensor(M.get_chemical_symbols())))
             self.MultiChemSymbols = np.vstack((self.MultiChemSymbols, M.get_chemical_symbols()))
