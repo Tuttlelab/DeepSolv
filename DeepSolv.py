@@ -81,7 +81,7 @@ class pKa:
                 self_energy = os.path.join(Dir, "Self_Energies.csv")
                 training_config = os.path.join(Dir, "training_config.json")
                 # Load traning_config to keep ANI parameters consistent
-                with open(training_config) as jin:
+                with open(training_config, 'r') as jin:
                     training_config = json.load(jin)
                 SelfE = pandas.read_csv(self_energy, index_col=0)
                 species_order = SelfE.index
@@ -94,33 +94,33 @@ class pKa:
 
     def load_yates(self):
         self.yates_mols = {}
-        for idx in self.mol_indices:
-            self.yates_mols[idx] = {}
-            self.yates_mols[idx]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}.out")}
-            self.yates_mols[idx]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}+.out")}
-            self.yates_mols[idx]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}_gasSP.out")}
-            self.yates_mols[idx]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(f"DFT/{idx}+_gasSP.out")}
+        for mol_index in self.mol_indices:
+            self.yates_mols[mol_index] = {}
+            self.yates_mols[mol_index]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}.out")}
+            self.yates_mols[mol_index]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}+.out")}
+            self.yates_mols[mol_index]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}_gasSP.out")}
+            self.yates_mols[mol_index]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(f"DFT/{mol_index}+_gasSP.out")}
             
-            for state in self.yates_mols[idx]:
-                self.yates_mols[idx][state]["orca_parse"].parse_coords()
-                self.yates_mols[idx][state]["orca_parse"].parse_free_energy()
-                self.yates_mols[idx][state]["DFT G"] = self.yates_mols[idx][state]["orca_parse"].Gibbs * 627.5
-                self.yates_mols[idx][state]["ase"] = Atoms(self.yates_mols[idx][state]["orca_parse"].atoms, 
-                                                           self.yates_mols[idx][state]["orca_parse"].coords[-1])
+            for state in self.yates_mols[mol_index]:
+                self.yates_mols[mol_index][state]["orca_parse"].parse_coords()
+                self.yates_mols[mol_index][state]["orca_parse"].parse_free_energy()
+                self.yates_mols[mol_index][state]["DFT G"] = self.yates_mols[mol_index][state]["orca_parse"].Gibbs * 627.5
+                self.yates_mols[mol_index][state]["ase"] = Atoms(self.yates_mols[mol_index][state]["orca_parse"].atoms, 
+                                                           self.yates_mols[mol_index][state]["orca_parse"].coords[-1])
                 try:
-                    self.yates_mols[idx][state]["ase"].calc = self.Gmodels[state].SUPERCALC
+                    self.yates_mols[mol_index][state]["ase"].calc = self.Gmodels[state].SUPERCALC
                 except KeyError:
                     warnings.warn("Couldnt load model for "+state, MyWarning)
-                self.yates_mols[idx][state]["Yates pKa"] = self.pKas.at[idx, "Yates"]
+                self.yates_mols[mol_index][state]["Yates pKa"] = self.pKas.at[mol_index, "Yates"]
 
     def use_yates_structures(self):
         self.input_structures = {}
-        for idx in self.yates_mols:
-            self.input_structures[idx] = {}
-            for state in self.yates_mols[idx]:
-                self.input_structures[idx][state] = self.yates_mols[idx][state]["ase"]
+        for mol_index in self.yates_mols:
+            self.input_structures[mol_index] = {}
+            for state in self.yates_mols[mol_index]:
+                self.input_structures[mol_index][state] = self.yates_mols[mol_index][state]["ase"]
                 try:
-                    self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
+                    self.input_structures[mol_index][state].calc = self.Gmodels[state].SUPERCALC
                 except KeyError:
                     warnings.warn("Failed to set Gmodels["+state+"]", MyWarning)
         
@@ -128,14 +128,6 @@ class pKa:
         assert self.yates_mols[idx][state]["ase"].get_chemical_symbols() == self.input_structures[idx][state].get_chemical_symbols(), "Cant measure RMSD if the atom order isnt the same"
         return orca_parser.calc_rmsd(self.yates_mols[idx][state]["ase"].positions,
                                      self.input_structures[idx][state].positions)
-                    
-    def make_md_mols(self):
-        for idx in self.mol_indices:
-            for state in self.yates_mols[idx]:
-                protonation = state.split("_")[0]
-                if not os.path.exists(f"BuildDataset/ValidationDS/Input_structures/{idx}_{protonation}.xyz"):
-                    self.yates_mols[idx][state]["ase"].write(f"BuildDataset/ValidationDS/Input_structures/{idx}_{protonation}_yates.xyz")
-
 
     def calc_pKa(self, idx):
         # Get the predictions, also does EnsembleEnergy
@@ -291,7 +283,7 @@ class pKa:
             dFmax = Fmax-Fmax[0]
             plt.plot(dY)
             plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
-            plt.ylabel("$\Delta$G")
+            plt.ylabel("$\\Delta$G")
             plt.plot(np.gradient(dY))
             plt.plot(dFmax)
             plt.title(f"{idx}_{state}")
