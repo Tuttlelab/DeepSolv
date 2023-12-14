@@ -26,6 +26,9 @@ cd DeepSolv
 pip install -r requirements.txt
 ```
 
+```bash
+python DeepSolv.py
+```
 
 This is a generalizable method based on the free energies and solvation of molecules.
 
