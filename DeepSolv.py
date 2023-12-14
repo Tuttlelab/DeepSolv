@@ -85,10 +85,10 @@ class pKa:
                     training_config = json.load(jin)
                 SelfE = pandas.read_csv(self_energy, index_col=0)
                 species_order = SelfE.index
-                self.Gmodels[key] = IrDNN(SelfE, verbose=False, device=device, 
+                self.Gmodels[key] = IrDNN(SelfE, verbose=False, device=device,
                                             training_config=training_config, next_gen=False)
                 self.Gmodels[key].GenModel(species_order)
-            self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")            
+            self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")
             print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
 
@@ -154,12 +154,10 @@ class pKa:
         dG_solv_A = Deprot_aq - Deprot_gas
         dG_solv_HA = Prot_aq - Prot_gas
         dG_aq = dGgas + dG_solv_A + dG_solv_H  - dG_solv_HA
-        pKa_1 = dG_aq/(2.303*0.0019872036*298.15)
-        
+        pKa_1 = dG_aq/(2.303*0.0019872036*298.15)        
         self.pKas.at[idx, "pKa_pred_1"] = pKa_1
         return pKa_1
 
-    
     def xyzrmsd(self, idx):
         Transparency = 0.8
         xyzout = open(f"rmsd_{idx}.xyz", 'w')
@@ -222,8 +220,6 @@ class pKa:
             with open(f"{work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
                 json.dump(Connections, jout, indent=4)
         return Connections
-    
-    
     
     def get_forces(self, idx: int, state: str):
         natoms = self.input_structures[idx][state].positions.shape[0]
@@ -356,7 +352,7 @@ class pKa:
         with tqdm.tqdm(total = 1000) as pbar:
             while NumConfs < 1000:
                 cids = AllChem.EmbedMultipleConfs(mol, # This doesnt include hydrogens in the RMS calculation!!
-                                                  clearConfs=clearConfs, 
+                                                  clearConfs=clearConfs,
                                                   numConfs=20, 
                                                   useBasicKnowledge = clearConfs,
                                                   maxAttempts=10000,
@@ -387,7 +383,6 @@ class pKa:
         # We want conformer guess that not only low energy but also that the ensemble of models are confident in
         rng = G.max(axis=0)-G.min(axis=0)
         mean = G.mean(axis=0)
-        
         # Filter the 1000+ conformer starting points to low energy and high confidence
         indices = np.argsort(rng)[:15]
         indices = np.hstack((indices, np.argsort(mean)[:15]))
@@ -418,7 +413,6 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
-
     for idx in [1,2,3,4,5,6,7,8,9,10,11]:
         pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
