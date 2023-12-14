@@ -143,11 +143,6 @@ class pKa:
         Deprot_gas = self.input_structures[idx]["deprot_gas"].get_potential_energy()*23.06035
         Prot_aq = self.input_structures[idx]["prot_aq"].get_potential_energy()*23.06035
         Prot_gas = self.input_structures[idx]["prot_gas"].get_potential_energy()*23.06035
-    
-        for state in self.input_structures[idx]:
-            #print(state, "err:", (self.input_structures[idx][state].get_potential_energy()*23.06035)-(self.pKas.at[idx, state] * 627.5))
-            pass
-
         # 2 methods of calculating pKa
         # Method 1 (traditional, dft-like thermodynamic cycle)
         dGgas = (Deprot_gas + G_H) - Prot_gas
@@ -395,7 +390,6 @@ class pKa:
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
         self.pKas = pandas.read_csv("DFT_Data_pKa.csv", index_col=0)
         self.radii = pandas.read_csv("Alvarez2013_vdwradii.csv", index_col=0)
-
 
 
 if __name__ == "__main__":
