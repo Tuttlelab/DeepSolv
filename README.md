@@ -17,7 +17,14 @@ $$$$$$$  |\$$$$$$$\ \$$$$$$$\ $$$$$$$  |\$$$$$$  |\$$$$$$  |$$ |   \$  /
 ```
 
 
+# Setup
 
+```bash
+git clone
+https://github.com/Tuttlelab/DeepSolv
+cd DeepSolv
+pip install -r requirements.txt
+```
 
 
 This is a generalizable method based on the free energies and solvation of molecules.
