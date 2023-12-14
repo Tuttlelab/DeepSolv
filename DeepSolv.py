@@ -7,10 +7,8 @@ from ase.build import minimize_rotation_and_translation
 from ase.io import read
 from sklearn.metrics import mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
 import torch
-import torchani
 import json
 import pandas
-import glob
 import os, itertools, tqdm, pickle, warnings, sys
 import numpy as np
 from colour import Color
