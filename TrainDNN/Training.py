@@ -44,6 +44,7 @@ parser.add_argument('--multigpu', action='store_true', help='Use CUDA if possibl
 parser.add_argument('--KMP_DUPLICATE_LIB_OK', action='store_true', default=True)
 parser.add_argument('--output', type=str, help='Output folder', required=True)
 parser.add_argument('--mixed', action='store_true', help='Does the dataset contains mixed explicit charges', default=False, required=False)
+#parser.add_argument('-Z', type=int, help='Charge', required=True)
 parser.add_argument('--batch_size', type=int, help='batch_size', required=True)
 parser.add_argument('--training_frac', type=float, help='Fraction of the dataset to be used for training', default=0.8)
 parser.add_argument('--ds', type=str, help='HDF5 dataset for training', required=True)
