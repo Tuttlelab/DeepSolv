@@ -212,7 +212,8 @@ class pKa:
         natoms = self.input_structures[idx][state].positions.shape[0]
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-        drs = [0.0001, 0.00001, 0.000001] + [-0.0001, -0.00001, -0.000001]
+        #drs = [0.0001, 0.00001, 0.000001] + [-0.0001, -0.00001, -0.000001]
+        drs = [0.0001]
         batch_dE = np.ndarray((len(drs), natoms, 3))
         batch_Forces = np.ndarray((len(drs), natoms, 3))
         mols = [None] * (len(drs)*natoms*3)   # put all the mols into a list them crunch in parallel on the gpu
@@ -396,7 +397,8 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
-    for idx in [1,2,3,4,5,6,7,8,9,10,11]:
+    #for idx in [1,2,3,4,5,6,7,8,9,10,11]:
+    for idx in [1,2,3,4]:
         pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -431,7 +433,10 @@ if __name__ == "__main__":
             deprot_Gs.append(G_deprot)
         
         for state in ["deprot_aq", "prot_aq"]:
-            conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
+            if state == "deprot_aq":    
+                conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
+            else:
+                conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
             final_mol = read(f"{work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
             final_mol.write(f"{work_folder}/FINAL_{idx}_{state}.xyz")
         
