@@ -260,6 +260,7 @@ class pKa:
                     T[conformer, atom, dim] += dr
                     conformer += 1
         
+        # Number of neural network core-jobs required is (natoms**2) * dimensions * drs
         species_tensors = self.Gmodels[state].species_to_tensor(mol.get_chemical_symbols())
         species_tensors = species_tensors.repeat(nconfs).reshape(nconfs, natoms)
         
