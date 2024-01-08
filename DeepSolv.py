@@ -91,7 +91,10 @@ class pKa:
 
 
     def load_yates(self):
+        self.G_H = -4.39
+        self.dG_solv_H = -264.61
         self.yates_mols = {}
+        self.yates_unopt_pKa = pandas.DataFrame()
         for mol_index in self.mol_indices:
             dft_folder = os.path.join(os.path.dirname(__file__), "DFT")
             
@@ -112,6 +115,17 @@ class pKa:
                 except:
                     warnings.warn("Couldnt load model for "+state, MyWarning)
                 self.yates_mols[mol_index][state]["Yates pKa"] = self.pKas.at[mol_index, "Yates"]
+                
+            deprot_aq_G = self.yates_mols[mol_index]['deprot_aq']['ase'].get_potential_energy()*23.06035
+            prot_aq_G = self.yates_mols[mol_index]['prot_aq']['ase'].get_potential_energy()*23.06035
+            guess_pKa = ((deprot_aq_G) - ((prot_aq_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
+            self.yates_unopt_pKa.at[mol_index, "DFT_unopt_pKa_pred"] = guess_pKa
+            self.yates_unopt_pKa.at[mol_index, "Yates_pKa_lit"] = self.pKas.at[mol_index, "Yates"]
+        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
+        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
+        self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
+            
+            
 
     def use_yates_structures(self):
         self.input_structures = {}
@@ -129,7 +143,23 @@ class pKa:
         return orca_parser.calc_rmsd(self.yates_mols[idx][state]["ase"].positions,
                                      self.input_structures[idx][state].positions)
 
-    def calc_pKa(self, idx):
+    def calc_pKa_full_cycle(self, idx):
+        # Get the predictions, also does EnsembleEnergy
+        Deprot_aq = self.input_structures[idx]["deprot_aq"].get_potential_energy()*23.06035
+        Deprot_gas = self.input_structures[idx]["deprot_gas"].get_potential_energy()*23.06035
+        Prot_aq = self.input_structures[idx]["prot_aq"].get_potential_energy()*23.06035
+        Prot_gas = self.input_structures[idx]["prot_gas"].get_potential_energy()*23.06035
+        # 2 methods of calculating pKa
+        # Method 1 (traditional, dft-like thermodynamic cycle)
+        dGgas = (Deprot_gas + G_H) - Prot_gas
+        dG_solv_A = Deprot_aq - Deprot_gas
+        dG_solv_HA = Prot_aq - Prot_gas
+        dG_aq = dGgas + dG_solv_A + dG_solv_H  - dG_solv_HA
+        pKa_1 = dG_aq/(2.303*0.0019872036*298.15)        
+        self.pKas.at[idx, "pKa_pred_1"] = pKa_1
+        return pKa_1
+    
+    def calc_pKa_direct(self, idx):
         # Get the predictions, also does EnsembleEnergy
         Deprot_aq = self.input_structures[idx]["deprot_aq"].get_potential_energy()*23.06035
         Deprot_gas = self.input_structures[idx]["deprot_gas"].get_potential_energy()*23.06035
@@ -392,11 +422,12 @@ if __name__ == "__main__":
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
+    #sys.exit()
     
     
 
     predictions = pandas.DataFrame()
-    for idx in [1,2,3,4,5,6,7,8,9,10,11]:
+    for idx in [1,2,3,4,5,6,7,9,10,11]:
         pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
