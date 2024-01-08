@@ -121,9 +121,9 @@ class pKa:
             guess_pKa = ((deprot_aq_G) - ((prot_aq_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
             self.yates_unopt_pKa.at[mol_index, "DFT_unopt_pKa_pred"] = guess_pKa
             self.yates_unopt_pKa.at[mol_index, "Yates_pKa_lit"] = self.pKas.at[mol_index, "Yates"]
-        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
-        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
-        self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
+        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
+        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
+        self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
             
             
 
@@ -242,27 +242,38 @@ class pKa:
         natoms = self.input_structures[idx][state].positions.shape[0]
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-# =============================================================================
-#         if drs is None:
-#             drs = [0.01, 0.001, 0.0001, 0.00001, 0.000001] + [-0.01, -0.001, -0.0001, -0.00001, -0.000001]
-#             #drs = [0.01]
-# =============================================================================
-        batch_dE = np.ndarray((len(drs), natoms, 3))
-        batch_Forces = np.ndarray((len(drs), natoms, 3))
-        mols = [None] * (len(drs)*natoms*3)   # put all the mols into a list them crunch in parallel on the gpu
-        mol_index = 0
+        if drs is None:
+            drs = [0.01, 0.001, 0.0001, 0.00001, 0.000001] + [-0.01, -0.001, -0.0001, -0.00001, -0.000001]
+            #drs = [0.01, 0.001]
+            #drs = [0.01]
+        mol = self.input_structures[idx][state].copy()
+        dims = 3
+        natoms = mol.positions.shape[0]
+        coords = torch.tensor(mol.positions, dtype=torch.float)
+        nconfs = len(drs) * dims * natoms
+        T = coords.repeat((nconfs, 1))
+        T = T.reshape(nconfs, natoms, 3)
+        conformer = 0
         for batch, dr in enumerate(drs):
-            for i in range(natoms):
-                for dim in range(3):
-                    mol = self.input_structures[idx][state].copy()
-                    mol.positions[i,dim] += dr
-                    mols[mol_index] = mol.copy()
-                    mol_index += 1
-        self.Gmodels[state].mol = mols # Just copy the mols straight in, no need to write and reload from an xyz
-        self.Gmodels[state].MakeTensors()
+            for atom in range(natoms):
+                for dim in range(dims):
+                    T[conformer, atom, dim] += dr
+                    conformer += 1
+        
+        species_tensors = self.Gmodels[state].species_to_tensor(mol.get_chemical_symbols())
+        species_tensors = species_tensors.repeat(nconfs).reshape(nconfs, natoms)
+        
+        self.Gmodels[state].Multi_Coords = T
+        self.Gmodels[state].Multi_Species = species_tensors
+        
+        MultiChemSymbols = np.tile(mol.get_chemical_symbols(), nconfs).reshape(nconfs, -1)
+        self.Gmodels[state].MultiChemSymbols = MultiChemSymbols
+
         batch_dE = self.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=False) # return_all is about all models, not all conformers            
         batch_dE = batch_dE.reshape((len(drs), natoms, 3))
         batch_dE = batch_dE - E0
+        
+        batch_Forces = np.ndarray((len(drs), natoms, 3))
         for i in range(batch_Forces.shape[0]):
             batch_Forces[i] = batch_dE[i] / drs[i]
             batch_Forces[i] -= batch_Forces[i].min(axis=0)
@@ -430,7 +441,8 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
-    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    #for idx in [1,2,3,4,5,6,7,9,10,11]:
+    for idx in [11]:
         pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -440,7 +452,7 @@ if __name__ == "__main__":
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
                 asemol_guesses = x.generate_confs(idx, state)
-                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 3)
+                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 15)
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
