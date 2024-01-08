@@ -87,7 +87,7 @@ class pKa:
                                             training_config=training_config, next_gen=False)
                 self.Gmodels[key].GenModel(species_order)
             self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")
-            print(f"{key} Checkpoint:  {fullpath} loaded successfully")
+            #print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
 
     def load_yates(self):
@@ -238,11 +238,15 @@ class pKa:
                 json.dump(Connections, jout, indent=4)
         return Connections
     
-    def get_forces(self, idx: int, state: str):
+    def get_forces(self, idx: int, state: str, drs: list = None):
         natoms = self.input_structures[idx][state].positions.shape[0]
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-        drs = [0.0001, 0.00001, 0.000001] + [-0.0001, -0.00001, -0.000001]
+# =============================================================================
+#         if drs is None:
+#             drs = [0.01, 0.001, 0.0001, 0.00001, 0.000001] + [-0.01, -0.001, -0.0001, -0.00001, -0.000001]
+#             #drs = [0.01]
+# =============================================================================
         batch_dE = np.ndarray((len(drs), natoms, 3))
         batch_Forces = np.ndarray((len(drs), natoms, 3))
         mols = [None] * (len(drs)*natoms*3)   # put all the mols into a list them crunch in parallel on the gpu
@@ -389,7 +393,7 @@ class pKa:
                 asemol_guesses[0].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
         return asemol_guesses
             
-    def filter_confs(self, idx, state, asemol_guesses):
+    def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
         print("Evaluating initial guesses")
         x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
         x.Gmodels[state].MakeTensors()
@@ -398,8 +402,8 @@ class pKa:
         rng = G.max(axis=0)-G.min(axis=0)
         mean = G.mean(axis=0)
         # Filter the 1000+ conformer starting points to low energy and high confidence
-        indices = np.argsort(rng)[:15]
-        indices = np.hstack((indices, np.argsort(mean)[:15]))
+        indices = np.argsort(rng)[:keep_n_confs]
+        indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
         indices = np.unique(indices)
         for i in range(len(indices)):
             asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
@@ -424,7 +428,6 @@ if __name__ == "__main__":
     x.use_yates_structures()
     #sys.exit()
     
-    
 
     predictions = pandas.DataFrame()
     for idx in [1,2,3,4,5,6,7,9,10,11]:
@@ -437,7 +440,7 @@ if __name__ == "__main__":
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
                 asemol_guesses = x.generate_confs(idx, state)
-                indices = x.filter_confs(idx, state, asemol_guesses)
+                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 3)
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
@@ -462,10 +465,12 @@ if __name__ == "__main__":
             deprot_Gs.append(G_deprot)
         
         for state in ["deprot_aq", "prot_aq"]:
-            conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
+            if state == "deprot_aq":    
+                conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
+            else:
+                conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
             final_mol = read(f"{work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
             final_mol.write(f"{work_folder}/FINAL_{idx}_{state}.xyz")
-        
         
         
         
@@ -505,6 +510,7 @@ if __name__ == "__main__":
         plt.text(predictions.at[index, "Pred"], predictions.at[index,"Target"], str(index))
     plt.scatter(predictions["Pred"], predictions["Target"], label="vs DFT")
     plt.scatter(predictions["Pred"], predictions["Yates"], label="vs Yates")
+    plt.xlabel("Predicted $pK_a$")
     plt.legend()
     plt.plot([21, 35], [21, 35], lw=1, color="black")
     print("DFT RMSE:", mean_squared_error(predictions["Pred"], predictions["Target"], squared=False))
