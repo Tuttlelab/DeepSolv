@@ -243,7 +243,7 @@ class pKa:
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
         if drs is None:
-            drs = [0.01, 0.001, 0.0001, 0.00001, 0.000001] + [-0.01, -0.001, -0.0001, -0.00001, -0.000001]
+            drs = [0.01, 0.001, 0.0001] + [-0.015, -0.0015, -0.00015]
             #drs = [0.01, 0.001]
             #drs = [0.01]
         mol = self.input_structures[idx][state].copy()
