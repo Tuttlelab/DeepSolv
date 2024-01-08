@@ -196,8 +196,8 @@ class pKa:
     def find_connections(self, idx, state):
         # Determine the things we are going to vary
         mol = self.input_structures[idx][state].copy()
-        if os.path.exists(f"{work_folder}/{idx}_{state}_Connections.json"):
-            with open(f"{work_folder}/{idx}_{state}_Connections.json") as jin:
+        if os.path.exists(f"{self.work_folder}/{idx}_{state}_Connections.json"):
+            with open(f"{self.work_folder}/{idx}_{state}_Connections.json") as jin:
                 Connections = json.load(jin)
         else:
             Connections = {}
@@ -234,7 +234,7 @@ class pKa:
                                "s0": mol[i].symbol, "s1": mol[j].symbol, "s2": mol[k].symbol, "s3": mol[l].symbol,
                                "val": dihedral, "Min": dihedral-40, "Max": dihedral+40,
                                "fineness": 100}
-            with open(f"{work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
+            with open(f"{self.work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
                 json.dump(Connections, jout, indent=4)
         return Connections
     
@@ -259,13 +259,13 @@ class pKa:
                 for dim in range(dims):
                     T[conformer, atom, dim] += dr
                     conformer += 1
-        
+                    
         # Number of neural network core-jobs required is (natoms**2) * dimensions * drs
         species_tensors = self.Gmodels[state].species_to_tensor(mol.get_chemical_symbols())
         species_tensors = species_tensors.repeat(nconfs).reshape(nconfs, natoms)
         
-        self.Gmodels[state].Multi_Coords = T
-        self.Gmodels[state].Multi_Species = species_tensors
+        self.Gmodels[state].Multi_Coords = T.to(device)
+        self.Gmodels[state].Multi_Species = species_tensors.to(device)
         
         MultiChemSymbols = np.tile(mol.get_chemical_symbols(), nconfs).reshape(nconfs, -1)
         self.Gmodels[state].MultiChemSymbols = MultiChemSymbols
@@ -283,7 +283,7 @@ class pKa:
         
     def Min(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
         maxstep = 0.01
-        trajfile = f"{work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
 
@@ -334,7 +334,7 @@ class pKa:
             plt.plot(dFmax)
             plt.title(f"{idx}_{state}")
             plt.tight_layout()
-            plt.savefig(f"{work_folder}/Min_{idx}_{state}.png")
+            plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
             plt.show()
         return Y, Fmax
     
@@ -400,9 +400,9 @@ class pKa:
             asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
             if i > 0:
                 minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
-                asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
+                asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
             else:
-                asemol_guesses[0].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
+                asemol_guesses[0].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
         return asemol_guesses
             
     def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
@@ -418,7 +418,7 @@ class pKa:
         indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
         indices = np.unique(indices)
         for i in range(len(indices)):
-            asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
+            asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
         return indices
         
     def __init__(self):
@@ -431,9 +431,9 @@ if __name__ == "__main__":
     G_H = -4.39 # kcal/mol
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
-    #x.load_models("TrainDNN/model/", "best.pt"); work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/model/", "best_L1.pt"); work_folder = "Calculations/L1"
-    os.makedirs(work_folder, exist_ok=True)
+    #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
+    x.load_models("TrainDNN/model/", "best_L1.pt"); x.work_folder = "Calculations/L1"
+    os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
@@ -444,7 +444,7 @@ if __name__ == "__main__":
     predictions = pandas.DataFrame()
     #for idx in [1,2,3,4,5,6,7,9,10,11]:
     for idx in [11]:
-        pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
+        pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
             optimization = pickle.load(open(pkl_opt, 'rb'))
@@ -482,8 +482,8 @@ if __name__ == "__main__":
                 conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
             else:
                 conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
-            final_mol = read(f"{work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
-            final_mol.write(f"{work_folder}/FINAL_{idx}_{state}.xyz")
+            final_mol = read(f"{x.work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
+            final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
         
         
         
