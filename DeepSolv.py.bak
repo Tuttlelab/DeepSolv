@@ -392,21 +392,7 @@ class pKa:
             else:
                 asemol_guesses[0].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
         return asemol_guesses
-    
-    def boltzmann_dist(self, energies):
-        self.boltzmann_const_eV = 8.617333262145e-5  # Boltzmann constant in eV/K
-        self.Temperature = 298.15 # Temperature in K
-        self.boltzmann_exponents = []
-        for E in energies:
-            exp_term = np.exp(-E/(self.boltzmann_const_eV*self.Temperature))
-            self.boltzmann_exponents.append(exp)
-        self.boltzmann_distributions = []
-        for Exp in self.boltzmann_exponents:
-            distribution = (Exp / np.sum(self.boltzmann_exponents))
-            self.boltzmann_distributions.append(distribution)
-        return self.boltzmann_distributions
-        
-        
+            
     def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
         print("Evaluating initial guesses")
         x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
@@ -444,7 +430,12 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
+<<<<<<< HEAD
     for idx in [1,2,3,4,5,6,7,9,10,11]:
+=======
+    #for idx in [1,2,3,4,5,6,7,9,10,11]:
+    for idx in [2, 7]:
+>>>>>>> 864291a55298f6087f5d9f43fa48d983868975ab
         pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
