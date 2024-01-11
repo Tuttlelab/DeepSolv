@@ -121,9 +121,9 @@ class pKa:
             guess_pKa = ((deprot_aq_G) - ((prot_aq_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
             self.yates_unopt_pKa.at[mol_index, "DFT_unopt_pKa_pred"] = guess_pKa
             self.yates_unopt_pKa.at[mol_index, "Yates_pKa_lit"] = self.pKas.at[mol_index, "Yates"]
-        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
-        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
-        self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(x.yates_unopt_pKa['Yates_pKa_lit'].dropna(), x.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
+        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
+        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
+        self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
             
             
 
@@ -196,8 +196,8 @@ class pKa:
     def find_connections(self, idx, state):
         # Determine the things we are going to vary
         mol = self.input_structures[idx][state].copy()
-        if os.path.exists(f"{work_folder}/{idx}_{state}_Connections.json"):
-            with open(f"{work_folder}/{idx}_{state}_Connections.json") as jin:
+        if os.path.exists(f"{self.work_folder}/{idx}_{state}_Connections.json"):
+            with open(f"{self.work_folder}/{idx}_{state}_Connections.json") as jin:
                 Connections = json.load(jin)
         else:
             Connections = {}
@@ -234,7 +234,7 @@ class pKa:
                                "s0": mol[i].symbol, "s1": mol[j].symbol, "s2": mol[k].symbol, "s3": mol[l].symbol,
                                "val": dihedral, "Min": dihedral-40, "Max": dihedral+40,
                                "fineness": 100}
-            with open(f"{work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
+            with open(f"{self.work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
                 json.dump(Connections, jout, indent=4)
         return Connections
     
@@ -242,27 +242,39 @@ class pKa:
         natoms = self.input_structures[idx][state].positions.shape[0]
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-# =============================================================================
-#         if drs is None:
-#             drs = [0.01, 0.001, 0.0001, 0.00001, 0.000001] + [-0.01, -0.001, -0.0001, -0.00001, -0.000001]
-#             #drs = [0.01]
-# =============================================================================
-        batch_dE = np.ndarray((len(drs), natoms, 3))
-        batch_Forces = np.ndarray((len(drs), natoms, 3))
-        mols = [None] * (len(drs)*natoms*3)   # put all the mols into a list them crunch in parallel on the gpu
-        mol_index = 0
+        if drs is None:
+            drs = [0.01, 0.001, 0.0001] + [-0.015, -0.0015, -0.00015]
+            #drs = [0.01, 0.001]
+            #drs = [0.01]
+        mol = self.input_structures[idx][state].copy()
+        dims = 3
+        natoms = mol.positions.shape[0]
+        coords = torch.tensor(mol.positions, dtype=torch.float)
+        nconfs = len(drs) * dims * natoms
+        T = coords.repeat((nconfs, 1))
+        T = T.reshape(nconfs, natoms, 3)
+        conformer = 0
         for batch, dr in enumerate(drs):
-            for i in range(natoms):
-                for dim in range(3):
-                    mol = self.input_structures[idx][state].copy()
-                    mol.positions[i,dim] += dr
-                    mols[mol_index] = mol.copy()
-                    mol_index += 1
-        self.Gmodels[state].mol = mols # Just copy the mols straight in, no need to write and reload from an xyz
-        self.Gmodels[state].MakeTensors()
+            for atom in range(natoms):
+                for dim in range(dims):
+                    T[conformer, atom, dim] += dr
+                    conformer += 1
+                    
+        # Number of neural network core-jobs required is (natoms**2) * dimensions * drs
+        species_tensors = self.Gmodels[state].species_to_tensor(mol.get_chemical_symbols())
+        species_tensors = species_tensors.repeat(nconfs).reshape(nconfs, natoms)
+        
+        self.Gmodels[state].Multi_Coords = T.to(device)
+        self.Gmodels[state].Multi_Species = species_tensors.to(device)
+        
+        MultiChemSymbols = np.tile(mol.get_chemical_symbols(), nconfs).reshape(nconfs, -1)
+        self.Gmodels[state].MultiChemSymbols = MultiChemSymbols
+
         batch_dE = self.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=False) # return_all is about all models, not all conformers            
         batch_dE = batch_dE.reshape((len(drs), natoms, 3))
         batch_dE = batch_dE - E0
+        
+        batch_Forces = np.ndarray((len(drs), natoms, 3))
         for i in range(batch_Forces.shape[0]):
             batch_Forces[i] = batch_dE[i] / drs[i]
             batch_Forces[i] -= batch_Forces[i].min(axis=0)
@@ -271,7 +283,7 @@ class pKa:
         
     def Min(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
         maxstep = 0.01
-        trajfile = f"{work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
 
@@ -322,7 +334,7 @@ class pKa:
             plt.plot(dFmax)
             plt.title(f"{idx}_{state}")
             plt.tight_layout()
-            plt.savefig(f"{work_folder}/Min_{idx}_{state}.png")
+            plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
             plt.show()
         return Y, Fmax
     
@@ -388,9 +400,9 @@ class pKa:
             asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
             if i > 0:
                 minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
-                asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
+                asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
             else:
-                asemol_guesses[0].write(f"{work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
+                asemol_guesses[0].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
         return asemol_guesses
     
     def boltzmann_dist(self, energies):
@@ -420,7 +432,7 @@ class pKa:
         indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
         indices = np.unique(indices)
         for i in range(len(indices)):
-            asemol_guesses[i].write(f"{work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
+            asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
         return indices
         
     def __init__(self):
@@ -433,9 +445,9 @@ if __name__ == "__main__":
     G_H = -4.39 # kcal/mol
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
-    #x.load_models("TrainDNN/model/", "best.pt"); work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/model/", "best_L1.pt"); work_folder = "Calculations/L1"
-    os.makedirs(work_folder, exist_ok=True)
+    #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
+    x.load_models("TrainDNN/model/", "best_L1.pt"); x.work_folder = "Calculations/L1"
+    os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
@@ -444,8 +456,9 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
-    for idx in [1,2,3,4,5,6,7,9,10,11]:
-        pkl_opt = f"{work_folder}/{idx}_optimization.pkl"
+    #for idx in [1,2,3,4,5,6,7,9,10,11]:
+    for idx in [11]:
+        pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
             optimization = pickle.load(open(pkl_opt, 'rb'))
@@ -454,7 +467,7 @@ if __name__ == "__main__":
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
                 asemol_guesses = x.generate_confs(idx, state)
-                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 3)
+                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 15)
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
@@ -483,8 +496,8 @@ if __name__ == "__main__":
                 conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
             else:
                 conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
-            final_mol = read(f"{work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
-            final_mol.write(f"{work_folder}/FINAL_{idx}_{state}.xyz")
+            final_mol = read(f"{x.work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
+            final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
         
         
         
