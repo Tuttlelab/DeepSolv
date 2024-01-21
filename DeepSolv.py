@@ -2,7 +2,8 @@
 
 from ase import Atoms
 from ase.calculators.mixing import SumCalculator, MixedCalculator
-from ase.optimize import LBFGS
+#from ase.optimize import LBFGS
+import pathlib
 from ase.build import minimize_rotation_and_translation
 from ase.io import read
 from sklearn.metrics import mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
@@ -62,22 +63,30 @@ def find_all(name, path):
 class pKa:
     def load_models(self, folder, checkpoint="best.pt"):
         self.Gmodels = {}
+        assert os.path.exists(folder)
+        assert len(glob.glob(f"{folder}/*/{checkpoint}")) > 0, "No .pt files of that name found"
+        
         for fullpath in find_all(checkpoint, folder):
-            chk = fullpath.replace(folder, "")
-            subdir = os.path.dirname(chk)
-            Dir = os.path.join(folder, subdir)
-            if "Z=0" in subdir.upper():
+            p = pathlib.Path(fullpath).parent
+            print(p)
+            chk = fullpath.replace(folder, "")#.replace("\\", "/")
+
+            if "Z=0" in p.name.upper():
                 key = "deprot_"
-            elif "Z=1" in subdir.upper():
+            elif "Z=1" in p.name.upper():
                 key = "prot_"
-            if "AQ" in subdir.upper():
+            if "AQ" in p.name.upper():
                 key += "aq"
-            elif "GAS" in subdir.upper():
+            elif "GAS" in p.name.upper():
                 key += "gas"
+            else:
+                print("Cannot decode:", p.parent.name)
+                sys.exit()
             
             if key not in self.Gmodels:
-                self_energy = os.path.join(Dir, "Self_Energies.csv")
-                training_config = os.path.join(Dir, "training_config.json")
+                self_energy = pathlib.Path(p, "Self_Energies.csv")
+                training_config = pathlib.Path(p, "training_config.json")
+                print("p:", p)
                 # Load traning_config to keep ANI parameters consistent
                 with open(training_config, 'r') as jin:
                     training_config = json.load(jin)
@@ -87,7 +96,7 @@ class pKa:
                                             training_config=training_config, next_gen=False)
                 self.Gmodels[key].GenModel(species_order)
             self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")
-            #print(f"{key} Checkpoint:  {fullpath} loaded successfully")
+            print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
 
     def load_yates(self):
@@ -446,13 +455,14 @@ if __name__ == "__main__":
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/model/", "best_L1.pt"); x.work_folder = "Calculations/L1"
+    #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex"
+    x.load_models("TrainDNN/models/Alex_9010", "best.pt"); x.work_folder = "Calculations/Alex"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
-    #sys.exit()
+    sys.exit()
     
 
     predictions = pandas.DataFrame()
