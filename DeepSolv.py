@@ -252,7 +252,7 @@ class pKa:
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
         if drs is None:
-            drs = [0.01, 0.001, 0.0001] + [-0.015, -0.0015, -0.00015]
+            drs = [0.1, 0.01, 0.001] #+ [-0.01, -0.001]
             #drs = [0.01, 0.001]
             #drs = [0.01]
         mol = self.input_structures[idx][state].copy()
@@ -309,6 +309,8 @@ class pKa:
             if len(fix_atoms) > 0:
                 Forces[fix_atoms] = 0
             step = (Forces / Forces.max()) * maxstep
+            SGD = np.random.random(step.shape).round()
+            step *= SGD
 
             self.input_structures[idx][state].positions -= step
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
@@ -318,12 +320,12 @@ class pKa:
                 Grad = np.gradient(Y-Y[0])[-1]
                 # Gromacs algorithm
                 if Grad > 0:
-                    maxstep *= 0.2
+                    maxstep *= 0.9
                     self.input_structures[idx][state].positions = reset_pos.copy()
                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-                else:
+                elif maxstep < 0.1:
                     maxstep *= 1.1
-                if maxstep < 0.01:
+                if maxstep < 0.001:
                     break
 
         if reload_fmax:
@@ -347,7 +349,10 @@ class pKa:
             plt.show()
         return Y, Fmax
     
-
+    @property()
+    def fname_guesses(self, idx, state):
+        return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
+    
     def generate_confs(self, idx, state):
         Connections = self.find_connections(idx, state)
         asemol = self.yates_mols[idx][state]["ase"].copy()
@@ -409,9 +414,9 @@ class pKa:
             asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
             if i > 0:
                 minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
-                asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
+                asemol_guesses[i].write(self.fname_guesses(idx, state), append=True)
             else:
-                asemol_guesses[0].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
+                asemol_guesses[0].write(self.fname_guesses(idx, state), append=False)
         return asemol_guesses
     
     def boltzmann_dist(self, energies):
@@ -434,12 +439,13 @@ class pKa:
         x.Gmodels[state].MakeTensors()
         G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=True) # return_all is about all models, not all conformers            
         # We want conformer guess that not only low energy but also that the ensemble of models are confident in
-        rng = G.max(axis=0)-G.min(axis=0)
+        #rng = G.max(axis=0)-G.min(axis=0)
         mean = G.mean(axis=0)
         # Filter the 1000+ conformer starting points to low energy and high confidence
-        indices = np.argsort(rng)[:keep_n_confs]
-        indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
-        indices = np.unique(indices)
+        indices = np.argsort(mean)[:keep_n_confs]
+        #indices = np.argsort(rng)[:keep_n_confs]
+        #indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
+        #indices = np.unique(indices)
         for i in range(len(indices)):
             asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
         return indices
@@ -455,19 +461,20 @@ if __name__ == "__main__":
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex"
-    x.load_models("TrainDNN/models/Alex_9010", "best.pt"); x.work_folder = "Calculations/Alex"
+    #x.load_models("TrainDNN/models/Alex_9010", "best.pt"); x.work_folder = "Calculations/Alex"
+    #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
+    
+    x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Alex"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
-    sys.exit()
-    
+
 
     predictions = pandas.DataFrame()
     #for idx in [1,2,3,4,5,6,7,9,10,11]:
-    for idx in [11]:
+    for idx in [2]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -476,13 +483,17 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
-                asemol_guesses = x.generate_confs(idx, state)
-                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 15)
+                if os.path.exists(x.fname_guesses(idx, state)):
+                    pass
+                else:
+                    asemol_guesses = x.generate_confs(idx, state)
+                
+                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                    Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}")
+                    Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
