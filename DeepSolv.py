@@ -289,6 +289,97 @@ class pKa:
             batch_Forces[i] -= batch_Forces[i].min(axis=0)
         return batch_Forces.mean(axis=0)
     
+    def Min_conjugateGD(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
+        
+        def energy_function(positions):
+            # Set positions and calculate energy
+            self.input_structures[idx][state].positions = positions.reshape((-1, 3))
+            energy = self.input_structures[idx][state].get_potential_energy() * 23.06035
+            return energy
+
+        def gradient(positions):
+            # Calculate forces and flatten the gradient
+            forces = self.get_forces(idx, state)
+            for atom_index in fix_atoms:
+                forces[atom_index] = [0, 0, 0]
+            return forces.flatten()
+
+        maxstep = 0.01
+        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+        self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+        self.input_structures[idx][state].write(trajfile, append=False)
+    
+        Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
+        Fmax = []
+        
+        x0 = self.input_structures[idx][state].positions.flatten()
+        x = x0.copy()
+        g = gradient(x)
+        d = -g
+        
+        for minstep in tqdm.tqdm(range(150)):
+# =============================================================================
+#             reset_pos = self.input_structures[idx][state].positions.copy()
+#             Forces = self.get_forces(idx, state)
+#             for atom_indice in fix_atoms:
+#                 #Forces[atom_indice] = [0,0,0]
+#                 pass
+# =============================================================================
+            
+            Fmax.append(np.abs(g).max())
+            Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
+            
+            if len(fix_atoms) > 0:
+                Forces[fix_atoms] = 0
+            
+            step = (g / Fmax[-1]) * maxstep
+            
+            x_new = x - step
+            g_new = self.get_forces(idx, state)
+            
+            g_new = g_new.flatten()
+            g = g.flatten()
+
+            beta = np.dot(g_new, g_new - g) / np.dot(g, g)
+            d = -g_new + beta * d
+
+            x = x_new
+            g = g_new
+
+            self.input_structures[idx][state].positions = x.reshape((-1, 3))
+            self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+            self.input_structures[idx][state].write(trajfile, append=True)
+            
+            if len(Y) > 5 and np.gradient(Y)[-1] > 0:
+                maxstep *= 0.9
+                x = x0.copy()
+                #self.input_structures[idx][state].positions = reset_pos.copy()
+                Y[-1] = energy_function(self.input_structures[idx][state].positions)
+            elif maxstep < 0.1:
+                maxstep *= 1.1
+            if maxstep < 0.001:
+                break
+            
+        if reload_fmax:
+            print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
+            self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
+            self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
+        
+        Y = np.array(Y)
+        Fmax = np.array(Fmax)
+        if Plot:
+            dY = Y-Y[0]
+            dFmax = Fmax-Fmax[0]
+            plt.plot(dY)
+            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
+            plt.ylabel("$\\Delta$G")
+            plt.plot(np.gradient(dY))
+            plt.plot(dFmax)
+            plt.title(f"{idx}_{state}")
+            plt.tight_layout()
+            plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
+            plt.show()
+        return Y, Fmax
         
     def Min(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
         maxstep = 0.01
@@ -349,7 +440,7 @@ class pKa:
             plt.show()
         return Y, Fmax
     
-    @property()
+
     def fname_guesses(self, idx, state):
         return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
     
@@ -464,7 +555,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best.pt"); x.work_folder = "Calculations/Alex"
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
-    x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Alex"
+    x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -474,7 +565,7 @@ if __name__ == "__main__":
 
     predictions = pandas.DataFrame()
     #for idx in [1,2,3,4,5,6,7,9,10,11]:
-    for idx in [2]:
+    for idx in [1]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -493,7 +584,8 @@ if __name__ == "__main__":
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                    Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
+                    #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
+                    Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
