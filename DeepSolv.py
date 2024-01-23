@@ -381,8 +381,10 @@ class pKa:
             plt.show()
         return Y, Fmax
         
-    def Min(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
-        maxstep = 0.01
+    def Min(self, idx: int, state: str, fix_atoms: list = [], 
+            reload_fmax=True, reload_gmin=False,
+            Plot=True, traj_ext=""):
+        maxstep = 0.11
         trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
@@ -400,9 +402,12 @@ class pKa:
             if len(fix_atoms) > 0:
                 Forces[fix_atoms] = 0
             step = (Forces / Forces.max()) * maxstep
-            SGD = np.random.random(step.shape).round()
+            SGD = np.random.random(step.shape)
+            SGD -= 0.3
+            SGD = SGD.round()
+            
             step *= SGD
-
+            
             self.input_structures[idx][state].positions -= step
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
@@ -423,6 +428,10 @@ class pKa:
             print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
             self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
             self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
+        elif reload_gmin:
+            print("Reloading at Gmin=", np.min(Y), np.argmin(Y))
+            self.input_structures[idx][state] = read(trajfile, index=np.argmin(Y))
+            self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC            
         
         Y = np.array(Y)
         Fmax = np.array(Fmax)
@@ -430,16 +439,16 @@ class pKa:
             dY = Y-Y[0]
             dFmax = Fmax-Fmax[0]
             plt.plot(dY)
-            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
+            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300)
+            plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300)
             plt.ylabel("$\\Delta$G")
-            plt.plot(np.gradient(dY))
-            plt.plot(dFmax)
+            #plt.plot(np.gradient(dY))
+            #plt.plot(dFmax)
             plt.title(f"{idx}_{state}")
             plt.tight_layout()
             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
             plt.show()
         return Y, Fmax
-    
 
     def fname_guesses(self, idx, state):
         return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
@@ -524,6 +533,12 @@ class pKa:
         return self.boltzmann_distributions
         
         
+    def fname_guesses(self, idx, state):
+        return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
+    
+    def fname_filtered(self, idx, state):
+        return f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz"
+    
     def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
         print("Evaluating initial guesses")
         x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
@@ -538,7 +553,7 @@ class pKa:
         #indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
         #indices = np.unique(indices)
         for i in range(len(indices)):
-            asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
+            asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=indices[0]))
         return indices
         
     def __init__(self):
@@ -574,22 +589,37 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
-                if os.path.exists(x.fname_guesses(idx, state)):
-                    pass
+                if os.path.exists(x.fname_guesses(idx, state)): # reload
+                    asemol_guesses = read(x.fname_guesses(idx, state), index=":")
                 else:
                     asemol_guesses = x.generate_confs(idx, state)
                 
-                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
+                if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
+                    indices = np.loadtxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")).astype(np.uint64)
+                    try:
+                        len(indices)
+                    except TypeError:
+                        indices = np.array([indices])
+                else:
+                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
+                    np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
+
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
                     #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
-                    Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
+                    
+                    Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
+                                    reload_fmax=False, reload_gmin=True)
+                    #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
                                                }
+
+                #sys.exit()
+                
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
         
@@ -632,19 +662,6 @@ if __name__ == "__main__":
                 print("(yates' higher, overoptimized)")
         
         
-        X, Y = [], []
-        for i in optimization["deprot_aq"]:
-            Final = optimization["deprot_aq"][i]["Final"]
-            Initial = optimization["deprot_aq"][i]["G"][0]
-            X.append(Initial)
-            Y.append(Final)
-            dY = optimization["deprot_aq"][i]["G"]
-            dY -= min(deprot_Gs)
-            plt.plot(dY)
-            Fmax = optimization["deprot_aq"][i]["Fmax"]
-            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
-        plt.show()
-
 
     for index in predictions.index:
         plt.text(predictions.at[index, "Pred"], predictions.at[index,"Target"], str(index))

@@ -52,7 +52,7 @@ if __name__ == "__main__":
     
     
     #F = x.get_forces(idx, state, drs = [0.01, 0.001, 0.0001] + [-0.015, -0.0015, -0.00015])
-    F = x.get_forces(idx, state, drs = [0.1])
+    F = x.get_forces(idx, state, drs = [-0.2])
     print("DNN")
     print((F/F.max()).round(2))
     print("DFT")
@@ -65,6 +65,7 @@ if __name__ == "__main__":
     Fx = Forces/0.52917724900001
     Fx *= 627.5
     print("RMSE:", mean_squared_error(Fx, F, squared=False), "kcal/mol / A")
+    print("RMSE:", mean_squared_error(Fx, -F, squared=False), "kcal/mol / A")
           
     #x.work_folder = "engrads"
     #x.Min(idx, state)
