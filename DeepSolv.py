@@ -349,9 +349,7 @@ class pKa:
             plt.show()
         return Y, Fmax
 
-    def fname_guesses(self, idx, state):
-        return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
-    
+   
     def generate_confs(self, idx, state):
         Connections = self.find_connections(idx, state)
         asemol = self.yates_mols[idx][state]["ase"].copy()
@@ -432,6 +430,12 @@ class pKa:
         return self.boltzmann_distributions
         
         
+    def fname_guesses(self, idx, state):
+        return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
+    
+    def fname_filtered(self, idx, state):
+        return f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz"
+    
     def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
         print("Evaluating initial guesses")
         x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
@@ -446,7 +450,7 @@ class pKa:
         #indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
         #indices = np.unique(indices)
         for i in range(len(indices)):
-            asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
+            asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=indices[0]))
         return indices
         
     def __init__(self):
@@ -482,12 +486,21 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
-                if os.path.exists(x.fname_guesses(idx, state)):
-                    asemol_guesses = read(x.fname_guesses(idx, state))
+                if os.path.exists(x.fname_guesses(idx, state)): # reload
+                    asemol_guesses = read(x.fname_guesses(idx, state), index=":")
                 else:
                     asemol_guesses = x.generate_confs(idx, state)
                 
-                indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
+                if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
+                    indices = np.loadtxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")).astype(np.uint64)
+                    try:
+                        len(indices)
+                    except TypeError:
+                        indices = np.array([indices])
+                else:
+                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
+                    np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
+
                 
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
@@ -497,7 +510,8 @@ if __name__ == "__main__":
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
                                                }
-            sys.exit()
+                sys.exit()
+                
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
         
