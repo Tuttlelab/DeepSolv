@@ -348,8 +348,7 @@ class pKa:
             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
             plt.show()
         return Y, Fmax
-    
-    @property()
+
     def fname_guesses(self, idx, state):
         return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
     
@@ -484,7 +483,7 @@ if __name__ == "__main__":
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
                 if os.path.exists(x.fname_guesses(idx, state)):
-                    pass
+                    asemol_guesses = read(x.fname_guesses(idx, state))
                 else:
                     asemol_guesses = x.generate_confs(idx, state)
                 
@@ -498,6 +497,7 @@ if __name__ == "__main__":
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
                                                }
+            sys.exit()
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
         
