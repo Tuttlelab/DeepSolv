@@ -588,6 +588,7 @@ else:
 # Nothing has crashed up to this point so write out to the config file that we
 # don't want to restart from scratch again next time
 
+Log.Log("L1_started: " + str(L1_started))
 best_i = 0
 
 for _ in range(AdamW_scheduler.last_epoch + 1, max_epochs):
@@ -618,17 +619,28 @@ for _ in range(AdamW_scheduler.last_epoch + 1, max_epochs):
             L1_started = True
             config["early_stopping_learning_rate"] *= 0.5
             best_model_checkpoint = config['output']+"/best_L1.pt"
+            best_L1_score = 1000.0
             Log.Log("learning_rate < early_stopping_learning_rate, switching to L1")
         else:
             Log.Log("learning_rate < early_stopping_learning_rate, exiting...")
             break
 
     # set a checkpoint
-    if AdamW_scheduler.is_better(EF_coef, AdamW_scheduler.best):
+    if L1_started:
+        if EF_coef <= best_L1_score:
+            Log.Log("EF_coef <= best_L1_score")
+            try:
+                torch.save(nn.state_dict(), best_model_checkpoint)
+            except PermissionError: # happens sometimes on windows for no good reason
+                torch.save(nn.state_dict(), best_model_checkpoint)
+            best_L1_score = EF_coef
+
+    elif AdamW_scheduler.is_better(EF_coef, AdamW_scheduler.best) :
         try:
             torch.save(nn.state_dict(), best_model_checkpoint)
         except PermissionError: # happens sometimes on windows for no good reason
             torch.save(nn.state_dict(), best_model_checkpoint)
+       
     
     if config["L1"] and L1_started:
         LOSS = torch.nn.L1Loss(reduction='none')

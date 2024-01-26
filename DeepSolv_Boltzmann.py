@@ -2,8 +2,7 @@
 
 from ase import Atoms
 from ase.calculators.mixing import SumCalculator, MixedCalculator
-#from ase.optimize import LBFGS
-import pathlib
+from ase.optimize import LBFGS
 from ase.build import minimize_rotation_and_translation
 from ase.io import read
 from sklearn.metrics import mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
@@ -20,6 +19,8 @@ from rdkit.Chem import AllChem
 from rdkit.Chem import rdDepictor
 import orca_parser 
 from _DNN import *
+
+from scipy.special import logsumexp
 
 
 class MyWarning(DeprecationWarning):
@@ -63,30 +64,22 @@ def find_all(name, path):
 class pKa:
     def load_models(self, folder, checkpoint="best.pt"):
         self.Gmodels = {}
-        assert os.path.exists(folder)
-        assert len(glob.glob(f"{folder}/*/{checkpoint}")) > 0, "No .pt files of that name found"
-        
         for fullpath in find_all(checkpoint, folder):
-            p = pathlib.Path(fullpath).parent
-            print(p)
-            chk = fullpath.replace(folder, "")#.replace("\\", "/")
-
-            if "Z=0" in p.name.upper():
+            chk = fullpath.replace(folder, "")
+            subdir = os.path.dirname(chk)
+            Dir = os.path.join(folder, subdir)
+            if "Z=0" in subdir.upper():
                 key = "deprot_"
-            elif "Z=1" in p.name.upper():
+            elif "Z=1" in subdir.upper():
                 key = "prot_"
-            if "AQ" in p.name.upper():
+            if "AQ" in subdir.upper():
                 key += "aq"
-            elif "GAS" in p.name.upper():
+            elif "GAS" in subdir.upper():
                 key += "gas"
-            else:
-                print("Cannot decode:", p.parent.name)
-                sys.exit()
             
             if key not in self.Gmodels:
-                self_energy = pathlib.Path(p, "Self_Energies.csv")
-                training_config = pathlib.Path(p, "training_config.json")
-                print("p:", p)
+                self_energy = os.path.join(Dir, "Self_Energies.csv")
+                training_config = os.path.join(Dir, "training_config.json")
                 # Load traning_config to keep ANI parameters consistent
                 with open(training_config, 'r') as jin:
                     training_config = json.load(jin)
@@ -96,7 +89,7 @@ class pKa:
                                             training_config=training_config, next_gen=False)
                 self.Gmodels[key].GenModel(species_order)
             self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")
-            print(f"{key} Checkpoint:  {fullpath} loaded successfully")
+            #print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
 
     def load_yates(self):
@@ -252,7 +245,7 @@ class pKa:
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
         if drs is None:
-            drs = [0.1, 0.01, 0.001] #+ [-0.01, -0.001]
+            drs = [0.01, 0.001, 0.0001] + [-0.015, -0.0015, -0.00015]
             #drs = [0.01, 0.001]
             #drs = [0.01]
         mol = self.input_structures[idx][state].copy()
@@ -289,77 +282,43 @@ class pKa:
             batch_Forces[i] -= batch_Forces[i].min(axis=0)
         return batch_Forces.mean(axis=0)
     
-    def Min_conjugateGD(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
         
-        def energy_function(positions):
-            # Set positions and calculate energy
-            self.input_structures[idx][state].positions = positions.reshape((-1, 3))
-            energy = self.input_structures[idx][state].get_potential_energy() * 23.06035
-            return energy
-
-        def gradient(positions):
-            # Calculate forces and flatten the gradient
-            forces = self.get_forces(idx, state)
-            for atom_index in fix_atoms:
-                forces[atom_index] = [0, 0, 0]
-            return forces.flatten()
-
+    def Min(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
         maxstep = 0.01
         trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
-    
+
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
-        
-        x0 = self.input_structures[idx][state].positions.flatten()
-        x = x0.copy()
-        g = gradient(x)
-        d = -g
-        
         for minstep in tqdm.tqdm(range(150)):
-# =============================================================================
-#             reset_pos = self.input_structures[idx][state].positions.copy()
-#             Forces = self.get_forces(idx, state)
-#             for atom_indice in fix_atoms:
-#                 #Forces[atom_indice] = [0,0,0]
-#                 pass
-# =============================================================================
-            
-            Fmax.append(np.abs(g).max())
+            reset_pos = self.input_structures[idx][state].positions.copy()
+            Forces = self.get_forces(idx, state)
+            for atom_indice in fix_atoms:
+                #Forces[atom_indice] = [0,0,0]
+                pass
+            Fmax.append(np.abs(Forces).max())
             Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
-            
             if len(fix_atoms) > 0:
                 Forces[fix_atoms] = 0
-            
-            step = (g / Fmax[-1]) * maxstep
-            
-            x_new = x - step
-            g_new = self.get_forces(idx, state)
-            
-            g_new = g_new.flatten()
-            g = g.flatten()
+            step = (Forces / Forces.max()) * maxstep
 
-            beta = np.dot(g_new, g_new - g) / np.dot(g, g)
-            d = -g_new + beta * d
-
-            x = x_new
-            g = g_new
-
-            self.input_structures[idx][state].positions = x.reshape((-1, 3))
+            self.input_structures[idx][state].positions -= step
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
             
-            if len(Y) > 5 and np.gradient(Y)[-1] > 0:
-                maxstep *= 0.9
-                x = x0.copy()
-                #self.input_structures[idx][state].positions = reset_pos.copy()
-                Y[-1] = energy_function(self.input_structures[idx][state].positions)
-            elif maxstep < 0.1:
-                maxstep *= 1.1
-            if maxstep < 0.001:
-                break
-            
+            if len(Y) > 5:
+                Grad = np.gradient(Y-Y[0])[-1]
+                # Gromacs algorithm
+                if Grad > 0:
+                    maxstep *= 0.2
+                    self.input_structures[idx][state].positions = reset_pos.copy()
+                    Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
+                else:
+                    maxstep *= 1.1
+                if maxstep < 0.01:
+                    break
+
         if reload_fmax:
             print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
             self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
@@ -380,79 +339,8 @@ class pKa:
             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
             plt.show()
         return Y, Fmax
-        
-    def Min(self, idx: int, state: str, fix_atoms: list = [], 
-            reload_fmax=True, reload_gmin=False,
-            Plot=True, traj_ext=""):
-        maxstep = 0.11
-        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
-        self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
-        self.input_structures[idx][state].write(trajfile, append=False)
-
-        Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
-        Fmax = []
-        for minstep in tqdm.tqdm(range(150)):
-            reset_pos = self.input_structures[idx][state].positions.copy()
-            Forces = self.get_forces(idx, state)
-            for atom_indice in fix_atoms:
-                #Forces[atom_indice] = [0,0,0]
-                pass
-            Fmax.append(np.abs(Forces).max())
-            Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
-            if len(fix_atoms) > 0:
-                Forces[fix_atoms] = 0
-            step = (Forces / Forces.max()) * maxstep
-            SGD = np.random.random(step.shape)
-            SGD -= 0.3
-            SGD = SGD.round()
-            
-            step *= SGD
-            
-            self.input_structures[idx][state].positions -= step
-            self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
-            self.input_structures[idx][state].write(trajfile, append=True)
-            
-            if len(Y) > 5:
-                Grad = np.gradient(Y-Y[0])[-1]
-                # Gromacs algorithm
-                if Grad > 0:
-                    maxstep *= 0.9
-                    self.input_structures[idx][state].positions = reset_pos.copy()
-                    Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-                elif maxstep < 0.1:
-                    maxstep *= 1.1
-                if maxstep < 0.001:
-                    break
-
-        if reload_fmax:
-            print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
-            self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
-            self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
-        elif reload_gmin:
-            print("Reloading at Gmin=", np.min(Y), np.argmin(Y))
-            self.input_structures[idx][state] = read(trajfile, index=np.argmin(Y))
-            self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC            
-        
-        Y = np.array(Y)
-        Fmax = np.array(Fmax)
-        if Plot:
-            dY = Y-Y[0]
-            dFmax = Fmax-Fmax[0]
-            plt.plot(dY)
-            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300)
-            plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300)
-            plt.ylabel("$\\Delta$G")
-            #plt.plot(np.gradient(dY))
-            #plt.plot(dFmax)
-            plt.title(f"{idx}_{state}")
-            plt.tight_layout()
-            plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
-            plt.show()
-        return Y, Fmax
-
-    def fname_guesses(self, idx, state):
-        return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
     
+
     def generate_confs(self, idx, state):
         Connections = self.find_connections(idx, state)
         asemol = self.yates_mols[idx][state]["ase"].copy()
@@ -514,46 +402,50 @@ class pKa:
             asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
             if i > 0:
                 minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
-                asemol_guesses[i].write(self.fname_guesses(idx, state), append=True)
+                asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
             else:
-                asemol_guesses[0].write(self.fname_guesses(idx, state), append=False)
+                asemol_guesses[0].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
         return asemol_guesses
     
     def boltzmann_dist(self, energies):
-        self.boltzmann_const_eV = 8.617333262145e-5  # Boltzmann constant in eV/K
-        self.Temperature = 298.15 # Temperature in K
-        self.boltzmann_exponents = []
-        for E in energies:
-            exp_term = np.exp(-E/(self.boltzmann_const_eV*self.Temperature))
-            self.boltzmann_exponents.append(exp)
-        self.boltzmann_distributions = []
-        for Exp in self.boltzmann_exponents:
-            distribution = (Exp / np.sum(self.boltzmann_exponents))
-            self.boltzmann_distributions.append(distribution)
-        return self.boltzmann_distributions
+# =============================================================================
+#         self.boltzmann_const_eV = 8.617333262145e-5  # Boltzmann constant in eV/K
+#         self.Temperature = 298.15 # Temperature in K
+#         self.boltzmann_exponents = []
+#         for E in energies:
+#             exp_term = np.exp(-E/(self.boltzmann_const_eV*self.Temperature))
+#             self.boltzmann_exponents.append(exp_term)
+#         self.boltzmann_distributions = []
+#         for Exp in self.boltzmann_exponents:
+#             distribution = (Exp / np.sum(self.boltzmann_exponents))
+#             self.boltzmann_distributions.append(distribution)
+#         return self.boltzmann_distributions
+# =============================================================================
+    
+        beta = 1 / (298.15 * 8.617333262145e-5)  # Boltzmann constant in eV/K
+        # Calculate the Boltzmann factors
+        factors = -beta * energies
+        # Use logsumexp to handle the exponentiation more stably
+        log_partition_function = logsumexp(factors)
+        # Calculate the Boltzmann probabilities
+        probabilities = np.exp(factors - log_partition_function)
+        return probabilities
         
         
-    def fname_guesses(self, idx, state):
-        return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
-    
-    def fname_filtered(self, idx, state):
-        return f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz"
-    
     def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
         print("Evaluating initial guesses")
         x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
         x.Gmodels[state].MakeTensors()
         G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=True) # return_all is about all models, not all conformers            
         # We want conformer guess that not only low energy but also that the ensemble of models are confident in
-        #rng = G.max(axis=0)-G.min(axis=0)
+        rng = G.max(axis=0)-G.min(axis=0)
         mean = G.mean(axis=0)
         # Filter the 1000+ conformer starting points to low energy and high confidence
-        indices = np.argsort(mean)[:keep_n_confs]
-        #indices = np.argsort(rng)[:keep_n_confs]
-        #indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
-        #indices = np.unique(indices)
+        indices = np.argsort(rng)[:keep_n_confs]
+        indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
+        indices = np.unique(indices)
         for i in range(len(indices)):
-            asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=indices[0]))
+            asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
         return indices
         
     def __init__(self):
@@ -567,20 +459,18 @@ if __name__ == "__main__":
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    #x.load_models("TrainDNN/models/Alex_9010", "best.pt"); x.work_folder = "Calculations/Alex"
-    #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
-    
-    x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
+    x.load_models("TrainDNN/model/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_full_opt"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
-
+    #sys.exit()
+    
 
     predictions = pandas.DataFrame()
-    #for idx in [1,2,3,4,5,6,7,9,10,11]:
-    for idx in [1]:
+    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    #for idx in [11]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -589,51 +479,56 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
-                if os.path.exists(x.fname_guesses(idx, state)): # reload
-                    asemol_guesses = read(x.fname_guesses(idx, state), index=":")
-                else:
-                    asemol_guesses = x.generate_confs(idx, state)
+                asemol_guesses = x.generate_confs(idx, state)
+                confs_eV = []
+                for j in asemol_guesses:
+                    j.calc = x.Gmodels[state].SUPERCALC
+                    confs_eV.append(j.get_potential_energy())
+                #boltzmann_dist = x.boltzmann_dist(confs_eV)
+                probabilities = x.boltzmann_dist(np.array(confs_eV))
+                sorted_probs = sorted(probabilities, reverse=True)
+                index_percent = int(len(sorted_probs) * 0.025)
+                indices = sorted_probs[:index_percent]
                 
-                if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
-                    indices = np.loadtxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")).astype(np.uint64)
-                    try:
-                        len(indices)
-                    except TypeError:
-                        indices = np.array([indices])
-                else:
-                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
-                    np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
-
+                #indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 15)
                 
-                for i in indices:
+                for i in range(len(indices)):
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                    #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
-                    
-                    Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
-                                    reload_fmax=False, reload_gmin=True)
-                    #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
+                    Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}")
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
-                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
-                                               }
+                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035,
+                                               "ase": x.input_structures[idx][state].copy()}
 
-                #sys.exit()
                 
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
         
-        #print(optimization)
-        prot_Gs = []
-        deprot_Gs = []
-        for i in optimization["prot_aq"]:
-            G_prot = optimization["prot_aq"][i]["Final"]
-            #G_prot = optimization["prot_aq"][i]["G"].min()
-            prot_Gs.append(G_prot)
-        for i in optimization["deprot_aq"]:
-            G_deprot = optimization["deprot_aq"][i]["Final"]
-            deprot_Gs.append(G_deprot)
-        
+       
+        for state in ["prot_aq", "deprot_aq"]:
+            optimised_eV = []
+            for atoms in optimization[state]:
+                mol = optimization[state][atoms]['ase']
+                mol.calc = x.Gmodels[state].SUPERCALC
+                optimised_eV.append(mol.get_potential_energy())
+            optimised_probabilities = x.boltzmann_dist(np.array(optimised_eV))
+            indices = [np.argmax(optimised_probabilities)]
+            #print(optimization)
+            
+    
+            if state == 'prot_aq':
+                prot_Gs = []
+                for i in optimization[state]:
+                    G_prot = optimization[state][i]["Final"]
+                    #G_prot = optimization["prot_aq"][i]["G"].min()
+                    prot_Gs.append(G_prot)
+            if state == 'deprot_aq':
+                deprot_Gs = []
+                for i in optimization[state]:
+                    G_deprot = optimization[state][i]["Final"]
+                    deprot_Gs.append(G_deprot)
+    
         for state in ["deprot_aq", "prot_aq"]:
             if state == "deprot_aq":    
                 conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
@@ -662,6 +557,19 @@ if __name__ == "__main__":
                 print("(yates' higher, overoptimized)")
         
         
+        X, Y = [], []
+        for i in optimization["deprot_aq"]:
+            Final = optimization["deprot_aq"][i]["Final"]
+            Initial = optimization["deprot_aq"][i]["G"][0]
+            X.append(Initial)
+            Y.append(Final)
+            dY = optimization["deprot_aq"][i]["G"]
+            dY -= min(deprot_Gs)
+            plt.plot(dY)
+            Fmax = optimization["deprot_aq"][i]["Fmax"]
+            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
+        plt.show()
+
 
     for index in predictions.index:
         plt.text(predictions.at[index, "Pred"], predictions.at[index,"Target"], str(index))

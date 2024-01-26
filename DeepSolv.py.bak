@@ -449,10 +449,16 @@ class pKa:
             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
             plt.show()
         return Y, Fmax
+<<<<<<< HEAD
+    
 
     def fname_guesses(self, idx, state):
         return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
     
+=======
+
+   
+>>>>>>> 9713114f60b7ea7904a5e9787436910ebeaa4794
     def generate_confs(self, idx, state):
         Connections = self.find_connections(idx, state)
         asemol = self.yates_mols[idx][state]["ase"].copy()
@@ -580,7 +586,11 @@ if __name__ == "__main__":
 
     predictions = pandas.DataFrame()
     #for idx in [1,2,3,4,5,6,7,9,10,11]:
+<<<<<<< HEAD
     for idx in [1]:
+=======
+    for idx in [1,2,5,11]:
+>>>>>>> 9713114f60b7ea7904a5e9787436910ebeaa4794
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -608,11 +618,13 @@ if __name__ == "__main__":
                 for i in indices:
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
+<<<<<<< HEAD
                     #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
-                    
+                    Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
+=======
                     Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
                                     reload_fmax=False, reload_gmin=True)
-                    #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
+>>>>>>> 9713114f60b7ea7904a5e9787436910ebeaa4794
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035

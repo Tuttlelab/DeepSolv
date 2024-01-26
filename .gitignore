@@ -166,3 +166,4 @@ cython_debug/
 latest.pt
 *.xyz
 Calculations/
+engrads/

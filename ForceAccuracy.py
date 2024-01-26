@@ -8,6 +8,7 @@ import torch
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+from sklearn.metrics import euclidean_distances, mean_squared_error
 
 from DeepSolv import *
 import orca_parser
@@ -15,11 +16,21 @@ import orca_parser
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cpu')
 
+protons = {1: "H",
+           6: "C",
+           7: "N",
+           8: "O",
+           9: "F",
+           15:"P",
+           17:"Cl",
+           77:"Ir"
+           }
+inv_protons = {v: k for k, v in protons.items()}
+
 if __name__ == "__main__":
     x = pKa()
-    #x.load_models("TrainDNN/model/", "best.pt"); work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/model/", "best_L1.pt"); work_folder = "Calculations/L1"
-    os.makedirs(work_folder, exist_ok=True)
+    x.load_models("TrainDNN/model/", "best.pt")
+    #x.load_models("TrainDNN/model/", "best_L1.pt")
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
@@ -27,37 +38,40 @@ if __name__ == "__main__":
     
     idx = 1
     state = "deprot_aq"
+    #mol = x.input_structures[1]["deprot_aq"].copy()
     
-    F = np.ones((len(x.input_structures[1]["deprot_aq"]), 3))
+    natoms, Eh, atomic_numbers, coords, Forces = orca_parser.parse_engrad("engrads/CO2.engrad")
     
-    mol = x.input_structures[1]["deprot_aq"].copy()
-    drs = [0.01, 0.001, 0.0001, 0.00001, 0.000001] + [-0.01, -0.001, -0.0001, -0.00001, -0.000001]
-    dims = 3
-    natoms = x.input_structures[1]["deprot_aq"].positions.shape[0]
-    coords = torch.tensor(x.input_structures[1]["deprot_aq"].positions, dtype=torch.float)#.flatten()
-    nconfs = len(drs) * dims * natoms
-    T = coords.repeat((nconfs, 1))
-    T = T.reshape(nconfs, natoms, 3)
-    conformer = 0
-    for batch, dr in enumerate(drs):
-        for atom in range(natoms):
-            for dim in range(3):
-                T[conformer, atom, dim] += dr
-                conformer += 1
+    _, Eh2, _, _, Forces2 = orca_parser.parse_engrad("engrads/CO2_1.engrad")
+    dE = (Eh2 - Eh)*627.5
+    dft_calc_F = dE / 0.1
     
-    species_tensors = x.Gmodels[state].species_to_tensor(mol.get_chemical_symbols())
-    species_tensors = species_tensors.repeat(nconfs).reshape(nconfs, natoms)
+    mol = Atoms([protons[x] for x in atomic_numbers], coords)
+    x.input_structures[idx]["deprot_aq"] = mol.copy()
+    x.input_structures[idx]["deprot_aq"].calc = x.Gmodels[state].SUPERCALC
     
-    x.Gmodels[state].Multi_Coords = T
-    x.Gmodels[state].Multi_Species = species_tensors
     
-    MultiChemSymbols = np.tile(mol.get_chemical_symbols(), nconfs).reshape(nconfs, -1)
-    x.Gmodels[state].MultiChemSymbols = MultiChemSymbols
+    #F = x.get_forces(idx, state, drs = [0.01, 0.001, 0.0001] + [-0.015, -0.0015, -0.00015])
+    F = x.get_forces(idx, state, drs = [-0.2])
+    print("DNN")
+    print((F/F.max()).round(2))
+    print("DFT")
+    print((Forces/Forces.max()).round(2))
     
-    batch_dE = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=False)
+    err = (F/F.max()) - (Forces/Forces.max())
+    rmse = mean_squared_error(F/F.max(), Forces/Forces.max(), squared=False)
     
+    print("RMSE:", rmse)
+    Fx = Forces/0.52917724900001
+    Fx *= 627.5
+    print("RMSE:", mean_squared_error(Fx, F, squared=False), "kcal/mol / A")
+    print("RMSE:", mean_squared_error(Fx, -F, squared=False), "kcal/mol / A")
+          
+    #x.work_folder = "engrads"
+    #x.Min(idx, state)
+
     sys.exit()
-    
+
     #F = x.get_forces(idx, state, drs=[0.1, 0.05, -0.1])
     
     drs = np.linspace(0, 0.05, 10)
