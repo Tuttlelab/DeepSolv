@@ -21,6 +21,8 @@ from rdkit.Chem import rdDepictor
 import orca_parser 
 from _DNN import *
 
+from scipy.optimize import minimize
+
 
 class MyWarning(DeprecationWarning):
     pass
@@ -325,30 +327,48 @@ class pKa:
 #                 #Forces[atom_indice] = [0,0,0]
 #                 pass
 # =============================================================================
-            
-            Fmax.append(np.abs(g).max())
-            Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
-            
+            result = minimize(energy_function, x0, method='CG', jac=gradient, options={'disp': False})
+
+            Fmax.append(np.abs(gradient(result.x)).max())
+            Y.append(energy_function(result.x))
+
             if len(fix_atoms) > 0:
-                Forces[fix_atoms] = 0
-            
-            step = (g / Fmax[-1]) * maxstep
-            
-            x_new = x - step
-            g_new = self.get_forces(idx, state)
-            
-            g_new = g_new.flatten()
-            g = g.flatten()
+                self.input_structures[idx][state].positions[fix_atoms] = 0
 
-            beta = np.dot(g_new, g_new - g) / np.dot(g, g)
-            d = -g_new + beta * d
+            step = (gradient(result.x) / Fmax[-1]) * maxstep
+            SGD = np.random.random(step.shape).round()
+            step *= SGD
 
-            x = x_new
-            g = g_new
-
-            self.input_structures[idx][state].positions = x.reshape((-1, 3))
+            self.input_structures[idx][state].positions -= step.reshape((-1, 3))
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
+            
+            
+# =============================================================================
+#             Fmax.append(np.abs(g).max())
+#             Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
+#             
+#             if len(fix_atoms) > 0:
+#                 Forces[fix_atoms] = 0
+#             
+#             step = (g / Fmax[-1]) * maxstep
+#             
+#             x_new = x - step
+#             g_new = self.get_forces(idx, state)
+#             
+#             g_new = g_new.flatten()
+#             g = g.flatten()
+# 
+#             beta = np.dot(g_new, g_new - g) / np.dot(g, g)
+#             d = -g_new + beta * d
+# 
+#             x = x_new
+#             g = g_new
+# 
+#             self.input_structures[idx][state].positions = x.reshape((-1, 3))
+#             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+#             self.input_structures[idx][state].write(trajfile, append=True)
+# =============================================================================
             
             if len(Y) > 5 and np.gradient(Y)[-1] > 0:
                 maxstep *= 0.9
@@ -579,8 +599,8 @@ if __name__ == "__main__":
 
 
     predictions = pandas.DataFrame()
-    #for idx in [1,2,3,4,5,6,7,9,10,11]:
-    for idx in [1]:
+    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    #for idx in [1,2,3]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -611,7 +631,8 @@ if __name__ == "__main__":
                     #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
                     
                     Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
-                                    reload_fmax=False, reload_gmin=True)
+                                    reload_fmax=True, reload_gmin=False
+                                    )
                     #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
