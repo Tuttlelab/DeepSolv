@@ -167,3 +167,4 @@ latest.pt
 *.xyz
 Calculations/
 engrads/
+BuildDataset/*.h5
