@@ -168,3 +168,4 @@ latest.pt
 Calculations/
 engrads/
 BuildDataset/*.h5
+*.pkl
