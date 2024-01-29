@@ -21,6 +21,8 @@ from rdkit.Chem import rdDepictor
 import orca_parser 
 from _DNN import *
 
+from scipy.optimize import minimize
+
 
 class MyWarning(DeprecationWarning):
     pass
@@ -229,6 +231,8 @@ class pKa:
                     continue
                 key=f"{i}-{j}-{k}"
                 angle = float(mol.get_angle(*triplet))
+                if mol[i].symbol == mol[j].symbol == mol[k].symbol == "H":
+                    continue
                 Connections[key] = {"Type":"Angle", "a0": i, "a1": j, "a2": k,
                                "s0": mol[i].symbol, "s1": mol[j].symbol, "s2": mol[k].symbol,
                                "val": angle, "Min": angle-20, "Max": angle+20,
@@ -325,30 +329,48 @@ class pKa:
 #                 #Forces[atom_indice] = [0,0,0]
 #                 pass
 # =============================================================================
-            
-            Fmax.append(np.abs(g).max())
-            Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
-            
+            result = minimize(energy_function, x0, method='CG', jac=gradient, options={'disp': False})
+
+            Fmax.append(np.abs(gradient(result.x)).max())
+            Y.append(energy_function(result.x))
+
             if len(fix_atoms) > 0:
-                Forces[fix_atoms] = 0
-            
-            step = (g / Fmax[-1]) * maxstep
-            
-            x_new = x - step
-            g_new = self.get_forces(idx, state)
-            
-            g_new = g_new.flatten()
-            g = g.flatten()
+                self.input_structures[idx][state].positions[fix_atoms] = 0
 
-            beta = np.dot(g_new, g_new - g) / np.dot(g, g)
-            d = -g_new + beta * d
+            step = (gradient(result.x) / Fmax[-1]) * maxstep
+            SGD = np.random.random(step.shape).round()
+            step *= SGD
 
-            x = x_new
-            g = g_new
-
-            self.input_structures[idx][state].positions = x.reshape((-1, 3))
+            self.input_structures[idx][state].positions -= step.reshape((-1, 3))
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
+            
+            
+# =============================================================================
+#             Fmax.append(np.abs(g).max())
+#             Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
+#             
+#             if len(fix_atoms) > 0:
+#                 Forces[fix_atoms] = 0
+#             
+#             step = (g / Fmax[-1]) * maxstep
+#             
+#             x_new = x - step
+#             g_new = self.get_forces(idx, state)
+#             
+#             g_new = g_new.flatten()
+#             g = g.flatten()
+# 
+#             beta = np.dot(g_new, g_new - g) / np.dot(g, g)
+#             d = -g_new + beta * d
+# 
+#             x = x_new
+#             g = g_new
+# 
+#             self.input_structures[idx][state].positions = x.reshape((-1, 3))
+#             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+#             self.input_structures[idx][state].write(trajfile, append=True)
+# =============================================================================
             
             if len(Y) > 5 and np.gradient(Y)[-1] > 0:
                 maxstep *= 0.9
@@ -374,7 +396,7 @@ class pKa:
             plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
             plt.ylabel("$\\Delta$G")
             plt.plot(np.gradient(dY))
-            plt.plot(dFmax)
+            #plt.plot(dFmax)
             plt.title(f"{idx}_{state}")
             plt.tight_layout()
             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
@@ -384,14 +406,17 @@ class pKa:
     def Min(self, idx: int, state: str, fix_atoms: list = [], 
             reload_fmax=True, reload_gmin=False,
             Plot=True, traj_ext=""):
-        maxstep = 0.11
+        maxstep = 0.001
         trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
 
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
-        for minstep in tqdm.tqdm(range(150)):
+        
+        nsteps = 300
+        
+        for minstep in tqdm.tqdm(range(nsteps)):
             reset_pos = self.input_structures[idx][state].positions.copy()
             Forces = self.get_forces(idx, state)
             for atom_indice in fix_atoms:
@@ -402,26 +427,26 @@ class pKa:
             if len(fix_atoms) > 0:
                 Forces[fix_atoms] = 0
             step = (Forces / Forces.max()) * maxstep
-            SGD = np.random.random(step.shape)
-            SGD -= 0.3
-            SGD = SGD.round()
-            
-            step *= SGD
+# =============================================================================
+#             SGD = np.random.random(step.shape)
+#             SGD += 0.1
+#             SGD = SGD.round()
+#             step *= SGD
+# =============================================================================
             
             self.input_structures[idx][state].positions -= step
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
             
             if len(Y) > 5:
-                Grad = np.gradient(Y-Y[0])[-1]
                 # Gromacs algorithm
-                if Grad > 0:
-                    maxstep *= 0.9
+                if (Y[-1] - Y[-2]) > 0: # The energy increased after the last step
+                    maxstep *= 0.8
                     self.input_structures[idx][state].positions = reset_pos.copy()
                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-                elif maxstep < 0.1:
+                elif maxstep < 0.1: # put a limit on how high the maxstep can climb
                     maxstep *= 1.1
-                if maxstep < 0.001:
+                if maxstep < 0.0001:
                     break
 
         if reload_fmax:
@@ -438,15 +463,16 @@ class pKa:
         if Plot:
             dY = Y-Y[0]
             dFmax = Fmax-Fmax[0]
-            plt.plot(dY)
-            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300)
-            plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300)
+            plt.plot(dY, label="dG")
+            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300, label="Force Min")
+            plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300, label="Free Energy Min")
             plt.ylabel("$\\Delta$G")
-            #plt.plot(np.gradient(dY))
+            plt.legend()
             #plt.plot(dFmax)
             plt.title(f"{idx}_{state}")
             plt.tight_layout()
             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
+            
             plt.show()
         return Y, Fmax
 
@@ -570,17 +596,18 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best.pt"); x.work_folder = "Calculations/Alex"
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
-    x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
+    #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
+    x.load_models("TrainDNN/models/cleaned", "best.pt"); x.work_folder = "Calculations/AlexCleaned"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
-
-
+    
+    
     predictions = pandas.DataFrame()
-    #for idx in [1,2,3,4,5,6,7,9,10,11]:
-    for idx in [1]:
+    for idx in [2]:
+    #for idx in [1,2,3]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -603,23 +630,83 @@ if __name__ == "__main__":
                 else:
                     indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
-
                 
-                for i in indices:
+                # Scan minimization
+                i = indices[0]
+                if not os.path.exists(f"{x.work_folder}/Scan_{i}_{state}.xyz"):
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                    #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
+                    Connections = x.find_connections(idx, state)
+                    G = [x.input_structures[idx][state].get_potential_energy()*23.06055]
                     
-                    Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
-                                    reload_fmax=False, reload_gmin=True)
-                    #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
-                    optimization[state][i] = {"G": Y,
-                                              "Fmax": Fmax,
-                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
-                                               }
+                    mol = asemol_guesses[i].copy()
+                    for scan_iter in range(3):
+                        for conn in tqdm.tqdm([x for x in Connections if Connections[x]["Type"] == "Dihedral"]):
+                            a0 = Connections[conn]["a0"]
+                            a1 = Connections[conn]["a1"]
+                            a2 = Connections[conn]["a2"]
+                            a3 = Connections[conn]["a3"]
+                            
+                            mols = []
+                            calculator = x.Gmodels[state]
+                            for dihedral in np.arange(0, 360, 1):
+                                mol.set_dihedral(a0,a1,a2,a3, dihedral)
+                                mols.append(mol.copy())
+                            calculator.mol = mols
+                            calculator.MakeTensors()
+                            pred = calculator.ProcessTensors(units="Ha", return_all=True)
+                            pred *= 627.5
+                            pred = pred.mean(axis=0)
+                            G.append(pred.min())
+                            pred-=pred.min()
+                            #plt.plot(pred[0])
+                            #plt.plot(pred[1])
+                            
+                            mols[np.argmin(pred)].write(f"{x.work_folder}/Scan_{i}_{state}.xyz", append=True)
+                            mol = mols[np.argmin(pred)].copy()
+                            
+                        for conn in tqdm.tqdm([x for x in Connections if Connections[x]["Type"] == "Angle"]):
+                            a0 = Connections[conn]["a0"]
+                            a1 = Connections[conn]["a1"]
+                            a2 = Connections[conn]["a2"]
+                            
+                            mols = []
+                            calculator = x.Gmodels[state]
+                            for angle in np.arange(0, 360, 1):
+                                mol.set_angle(a0,a1,a2, angle)
+                                mols.append(mol.copy())
+                            calculator.mol = mols
+                            calculator.MakeTensors()
+                            pred = calculator.ProcessTensors(units="Ha", return_all=True)
+                            pred *= 627.5
+                            pred = pred.mean(axis=0)
+                            G.append(pred.min())
+                            pred-=pred.min()
+                            #plt.plot(pred[0])
+                            #plt.plot(pred[1])
+                            
+                            mols[np.argmin(pred)].write(f"{x.work_folder}/Scan_{i}_{state}.xyz", append=True)
+                            mol = mols[np.argmin(pred)].copy()
+                            
+                            
+                            
+                    plt.plot(G)
+                    plt.show()
 
-                #sys.exit()
+                x.input_structures[idx][state] = read(f"{x.work_folder}/Scan_{i}_{state}.xyz", index=-1)
+                x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
+                #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
                 
+                Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
+                                reload_fmax=False, reload_gmin=True
+                                )
+                #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
+                optimization[state][i] = {"G": Y,
+                                          "Fmax": Fmax,
+                                          "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
+                                           }
+
+ 
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
         
@@ -627,11 +714,12 @@ if __name__ == "__main__":
         prot_Gs = []
         deprot_Gs = []
         for i in optimization["prot_aq"]:
-            G_prot = optimization["prot_aq"][i]["Final"]
-            #G_prot = optimization["prot_aq"][i]["G"].min()
+            #G_prot = optimization["prot_aq"][i]["Final"]
+            G_prot = optimization["prot_aq"][i]["G"].min()
             prot_Gs.append(G_prot)
         for i in optimization["deprot_aq"]:
-            G_deprot = optimization["deprot_aq"][i]["Final"]
+            #G_deprot = optimization["deprot_aq"][i]["Final"]
+            G_deprot = optimization["deprot_aq"][i]["G"].min()
             deprot_Gs.append(G_deprot)
         
         for state in ["deprot_aq", "prot_aq"]:
