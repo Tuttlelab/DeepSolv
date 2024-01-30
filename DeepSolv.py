@@ -414,7 +414,7 @@ class pKa:
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
         
-        nsteps = 300
+        nsteps = 1000
         
         for minstep in tqdm.tqdm(range(nsteps)):
             reset_pos = self.input_structures[idx][state].positions.copy()
@@ -442,6 +442,7 @@ class pKa:
                 # Gromacs algorithm
                 if (Y[-1] - Y[-2]) > 0: # The energy increased after the last step
                     maxstep *= 0.8
+                    print("Maxstep:", maxstep)
                     self.input_structures[idx][state].positions = reset_pos.copy()
                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
                 elif maxstep < 0.1: # put a limit on how high the maxstep can climb
@@ -732,11 +733,21 @@ if __name__ == "__main__":
         for i in optimization["prot_aq"]:
             #G_prot = optimization["prot_aq"][i]["Final"]
             G_prot = optimization["prot_aq"][i]["G"].min()
+            plt.plot(optimization["prot_aq"][i]["G"], label=f"prot_{i}")
             prot_Gs.append(G_prot)
+        plt.legend()
+        plt.title("prot_aq")
+        plt.show()
         for i in optimization["deprot_aq"]:
             #G_deprot = optimization["deprot_aq"][i]["Final"]
+            plt.plot(optimization["deprot_aq"][i]["G"], label=f"deprot_{i}")
             G_deprot = optimization["deprot_aq"][i]["G"].min()
             deprot_Gs.append(G_deprot)
+        plt.legend()
+        plt.title("deprot_aq")
+        plt.show()
+        
+        sys.exit()
         
         for state in ["deprot_aq", "prot_aq"]:
             if state == "deprot_aq":    
