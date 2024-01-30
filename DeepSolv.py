@@ -565,22 +565,31 @@ class pKa:
     def fname_filtered(self, idx, state):
         return f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz"
     
-    def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
-        print("Evaluating initial guesses")
+    def guesses_energies(self, idx, state, asemol_guesses):
         x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
         x.Gmodels[state].MakeTensors()
-        G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=True) # return_all is about all models, not all conformers            
-        # We want conformer guess that not only low energy but also that the ensemble of models are confident in
-        #rng = G.max(axis=0)-G.min(axis=0)
-        mean = G.mean(axis=0)
-        # Filter the 1000+ conformer starting points to low energy and high confidence
-        indices = np.argsort(mean)[:keep_n_confs]
-        #indices = np.argsort(rng)[:keep_n_confs]
-        #indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
-        #indices = np.unique(indices)
-        for i in range(len(indices)):
-            asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=indices[0]))
-        return indices
+        G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=False) # return_all is about all models, not all conformers            
+        return G
+        
+    def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
+        print("Evaluating initial guesses")
+        print("Filtering by RMSD")
+
+        RMSD = np.zeros((len(asemol_guesses), len(asemol_guesses)))
+        for i in range(0, len(asemol_guesses)):
+            for j in range(0, len(asemol_guesses)):
+                rmsd = np.sqrt(np.mean((asemol_guesses[i].positions - asemol_guesses[j].positions)**2))
+                RMSD[i,j] = rmsd
+
+        energies = self.guesses_energies(idx, state, asemol_guesses)
+        keep = [np.argmin(energies)]
+        keep.append(np.argmax(RMSD[keep[0]]))
+        keep.append(np.argmax(RMSD[keep].mean(axis=0)))
+        keep.append(np.argmax(RMSD[keep].mean(axis=0))) # 4th
+        
+        for i in range(len(keep)):
+            asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=keep[0]))
+        return keep
         
     def __init__(self):
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
@@ -597,7 +606,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
     #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
-    x.load_models("TrainDNN/models/cleaned", "best.pt"); x.work_folder = "Calculations/AlexCleaned"
+    x.load_models("TrainDNN/models", "best.pt"); x.work_folder = "Calculations/AlexCleaned"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -621,6 +630,7 @@ if __name__ == "__main__":
                 else:
                     asemol_guesses = x.generate_confs(idx, state)
                 
+                
                 if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
                     indices = np.loadtxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")).astype(np.uint64)
                     try:
@@ -631,84 +641,90 @@ if __name__ == "__main__":
                     indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
                 
-                # Scan minimization
-                i = indices[0]
-                if not os.path.exists(f"{x.work_folder}/Scan_{i}_{state}.xyz"):
+           
+                
+# =============================================================================
+#                 
+#                 # Scan minimization
+#                 print("Scanning Minimization")
+#                 i = indices[0]
+#                 if not os.path.exists(f"{x.work_folder}/Scan_{i}_{state}.xyz"):
+#                     x.input_structures[idx][state] = asemol_guesses[i].copy()
+#                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
+#                     Connections = x.find_connections(idx, state)
+#                     G = [x.input_structures[idx][state].get_potential_energy()*23.06055]
+#                     
+#                     mol = asemol_guesses[i].copy()
+#                     for scan_iter in range(3):
+#                         for conn in tqdm.tqdm([x for x in Connections if Connections[x]["Type"] == "Dihedral"]):
+#                             a0 = Connections[conn]["a0"]
+#                             a1 = Connections[conn]["a1"]
+#                             a2 = Connections[conn]["a2"]
+#                             a3 = Connections[conn]["a3"]
+#                             
+#                             mols = []
+#                             calculator = x.Gmodels[state]
+#                             for dihedral in np.arange(0, 360, 1):
+#                                 mol.set_dihedral(a0,a1,a2,a3, dihedral)
+#                                 mols.append(mol.copy())
+#                             calculator.mol = mols
+#                             calculator.MakeTensors()
+#                             pred = calculator.ProcessTensors(units="Ha", return_all=True)
+#                             pred *= 627.5
+#                             pred = pred.mean(axis=0)
+#                             G.append(pred.min())
+#                             pred-=pred.min()
+#                             #plt.plot(pred[0])
+#                             #plt.plot(pred[1])
+#                             
+#                             mols[np.argmin(pred)].write(f"{x.work_folder}/Scan_{i}_{state}.xyz", append=True)
+#                             mol = mols[np.argmin(pred)].copy()
+#                             
+#                         for conn in tqdm.tqdm([x for x in Connections if Connections[x]["Type"] == "Angle"]):
+#                             a0 = Connections[conn]["a0"]
+#                             a1 = Connections[conn]["a1"]
+#                             a2 = Connections[conn]["a2"]
+#                             
+#                             mols = []
+#                             calculator = x.Gmodels[state]
+#                             for angle in np.arange(0, 360, 1):
+#                                 mol.set_angle(a0,a1,a2, angle)
+#                                 mols.append(mol.copy())
+#                             calculator.mol = mols
+#                             calculator.MakeTensors()
+#                             pred = calculator.ProcessTensors(units="Ha", return_all=True)
+#                             pred *= 627.5
+#                             pred = pred.mean(axis=0)
+#                             G.append(pred.min())
+#                             pred-=pred.min()
+#                             #plt.plot(pred[0])
+#                             #plt.plot(pred[1])
+#                             
+#                             mols[np.argmin(pred)].write(f"{x.work_folder}/Scan_{i}_{state}.xyz", append=True)
+#                             mol = mols[np.argmin(pred)].copy()
+# 
+#                     plt.plot(G)
+#                     plt.show()
+# =============================================================================
+                for i in indices:
+                    #x.input_structures[idx][state] = read(f"{x.work_folder}/Scan_{i}_{state}.xyz", index=-1)
                     x.input_structures[idx][state] = asemol_guesses[i].copy()
                     x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                    Connections = x.find_connections(idx, state)
-                    G = [x.input_structures[idx][state].get_potential_energy()*23.06055]
+                    #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
                     
-                    mol = asemol_guesses[i].copy()
-                    for scan_iter in range(3):
-                        for conn in tqdm.tqdm([x for x in Connections if Connections[x]["Type"] == "Dihedral"]):
-                            a0 = Connections[conn]["a0"]
-                            a1 = Connections[conn]["a1"]
-                            a2 = Connections[conn]["a2"]
-                            a3 = Connections[conn]["a3"]
-                            
-                            mols = []
-                            calculator = x.Gmodels[state]
-                            for dihedral in np.arange(0, 360, 1):
-                                mol.set_dihedral(a0,a1,a2,a3, dihedral)
-                                mols.append(mol.copy())
-                            calculator.mol = mols
-                            calculator.MakeTensors()
-                            pred = calculator.ProcessTensors(units="Ha", return_all=True)
-                            pred *= 627.5
-                            pred = pred.mean(axis=0)
-                            G.append(pred.min())
-                            pred-=pred.min()
-                            #plt.plot(pred[0])
-                            #plt.plot(pred[1])
-                            
-                            mols[np.argmin(pred)].write(f"{x.work_folder}/Scan_{i}_{state}.xyz", append=True)
-                            mol = mols[np.argmin(pred)].copy()
-                            
-                        for conn in tqdm.tqdm([x for x in Connections if Connections[x]["Type"] == "Angle"]):
-                            a0 = Connections[conn]["a0"]
-                            a1 = Connections[conn]["a1"]
-                            a2 = Connections[conn]["a2"]
-                            
-                            mols = []
-                            calculator = x.Gmodels[state]
-                            for angle in np.arange(0, 360, 1):
-                                mol.set_angle(a0,a1,a2, angle)
-                                mols.append(mol.copy())
-                            calculator.mol = mols
-                            calculator.MakeTensors()
-                            pred = calculator.ProcessTensors(units="Ha", return_all=True)
-                            pred *= 627.5
-                            pred = pred.mean(axis=0)
-                            G.append(pred.min())
-                            pred-=pred.min()
-                            #plt.plot(pred[0])
-                            #plt.plot(pred[1])
-                            
-                            mols[np.argmin(pred)].write(f"{x.work_folder}/Scan_{i}_{state}.xyz", append=True)
-                            mol = mols[np.argmin(pred)].copy()
-                            
-                            
-                            
-                    plt.plot(G)
-                    plt.show()
-
-                x.input_structures[idx][state] = read(f"{x.work_folder}/Scan_{i}_{state}.xyz", index=-1)
-                x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                #Y, Fmax = x.Min(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=False)
-                
-                Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
-                                reload_fmax=False, reload_gmin=True
-                                )
-                #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
-                optimization[state][i] = {"G": Y,
-                                          "Fmax": Fmax,
-                                          "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
-                                           }
+                    Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
+                                    reload_fmax=False, reload_gmin=True
+                                    )
+                    #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
+                    optimization[state][i] = {"G": Y,
+                                              "Fmax": Fmax,
+                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
+                                               }
 
  
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
+        #sys.exit()
         
         #print(optimization)
         prot_Gs = []
