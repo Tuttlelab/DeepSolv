@@ -426,7 +426,7 @@ class pKa:
             Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
             if len(fix_atoms) > 0:
                 Forces[fix_atoms] = 0
-            step = (Forces / Forces.max()) * maxstep
+            step = (Forces / np.abs(Forces).max()) * maxstep
 # =============================================================================
 #             SGD = np.random.random(step.shape)
 #             SGD += 0.1
@@ -747,7 +747,7 @@ if __name__ == "__main__":
         plt.title("deprot_aq")
         plt.show()
         
-        sys.exit()
+
         
         for state in ["deprot_aq", "prot_aq"]:
             if state == "deprot_aq":    
