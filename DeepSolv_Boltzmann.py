@@ -459,7 +459,7 @@ if __name__ == "__main__":
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/model/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_full_opt"
+    x.load_models("TrainDNN/models/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_1_only"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -470,7 +470,7 @@ if __name__ == "__main__":
 
     predictions = pandas.DataFrame()
     for idx in [1,2,3,4,5,6,7,9,10,11]:
-    #for idx in [11]:
+    #for idx in [1]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
