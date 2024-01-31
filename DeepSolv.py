@@ -407,7 +407,7 @@ class pKa:
             reload_fmax=True, reload_gmin=False,
             Plot=True, traj_ext=""):
         print("Optimizing:", idx, state)
-        maxstep = 0.005
+        maxstep = 0.009
         trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
@@ -415,7 +415,7 @@ class pKa:
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
         
-        nsteps = 500
+        nsteps = 100
         
         for minstep in tqdm.tqdm(range(nsteps)):
             reset_pos = self.input_structures[idx][state].positions.copy()
@@ -435,14 +435,15 @@ class pKa:
             
             if len(Y) > 5:
                 # Gromacs algorithm
-                if (Y[-1] - Y[-2]) > 0: # The energy increased after the last step
-                    maxstep *= 0.8
-                    print("Maxstep:", maxstep)
+                if Y[-1] > Y[-2]: # The energy increased after the last step
+                #if (Fmax[-1] - Fmax[-2]) > 0: # The energy increased after the last step
+                    maxstep *= 0.2
+                    #print("Maxstep:", maxstep)
                     self.input_structures[idx][state].positions = reset_pos.copy()
                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
                 elif maxstep < 0.1: # put a limit on how high the maxstep can climb
-                    maxstep *= 1.1
-                if maxstep < 0.0005:
+                    maxstep *= 1.2
+                if maxstep < 0.001:
                     break
 
         if reload_fmax:
@@ -580,8 +581,9 @@ class pKa:
         energies = self.guesses_energies(idx, state, asemol_guesses)
         keep = [np.argmin(energies)]
         keep.append(np.argmax(RMSD[keep[0]]))
-        keep.append(np.argmax(RMSD[keep].mean(axis=0)))
-        keep.append(np.argmax(RMSD[keep].mean(axis=0))) # 4th
+        keep.append(np.argmax(RMSD[keep].mean(axis=0))) #3rd
+        for i in range(10):
+            keep.append(np.argmax(RMSD[keep].mean(axis=0))) # ith
         
         for i in range(len(keep)):
             asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=keep[0]))
@@ -602,7 +604,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
     #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
-    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/Alex"
+    x.load_models("TrainDNN/models/uncleaned", "best.pt"); x.work_folder = "Calculations/Alex"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -619,7 +621,7 @@ if __name__ == "__main__":
             optimization = pickle.load(open(pkl_opt, 'rb'))
         else:
             optimization = {}
-            for state in ["prot_aq", "deprot_aq"]:
+            for state in ["deprot_aq", "prot_aq"]:
                 optimization[state] = {}
                 if os.path.exists(x.fname_guesses(idx, state)): # reload
                     asemol_guesses = read(x.fname_guesses(idx, state), index=":")
@@ -637,7 +639,7 @@ if __name__ == "__main__":
                     indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
                 
-           
+                
                 
 # =============================================================================
 #                 
