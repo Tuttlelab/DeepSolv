@@ -406,7 +406,8 @@ class pKa:
     def Min(self, idx: int, state: str, fix_atoms: list = [], 
             reload_fmax=True, reload_gmin=False,
             Plot=True, traj_ext=""):
-        maxstep = 0.001
+        print("Optimizing:", idx, state)
+        maxstep = 0.005
         trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
         self.input_structures[idx][state].write(trajfile, append=False)
@@ -414,7 +415,7 @@ class pKa:
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
         
-        nsteps = 1000
+        nsteps = 500
         
         for minstep in tqdm.tqdm(range(nsteps)):
             reset_pos = self.input_structures[idx][state].positions.copy()
@@ -427,13 +428,7 @@ class pKa:
             if len(fix_atoms) > 0:
                 Forces[fix_atoms] = 0
             step = (Forces / np.abs(Forces).max()) * maxstep
-# =============================================================================
-#             SGD = np.random.random(step.shape)
-#             SGD += 0.1
-#             SGD = SGD.round()
-#             step *= SGD
-# =============================================================================
-            
+
             self.input_structures[idx][state].positions -= step
             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
             self.input_structures[idx][state].write(trajfile, append=True)
@@ -447,7 +442,7 @@ class pKa:
                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
                 elif maxstep < 0.1: # put a limit on how high the maxstep can climb
                     maxstep *= 1.1
-                if maxstep < 0.0001:
+                if maxstep < 0.0005:
                     break
 
         if reload_fmax:
@@ -607,7 +602,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
     #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
-    x.load_models("TrainDNN/models", "best.pt"); x.work_folder = "Calculations/AlexCleaned"
+    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/Alex"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
