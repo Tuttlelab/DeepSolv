@@ -544,70 +544,66 @@ if __name__ == "__main__":
         deprot_energies_kcal = []
         opt_indices_prot = [] 
         opt_indices_deprot = []
-
-        for i in optimization["prot_aq"]:
-            #G_prot = optimization["prot_aq"][i]["Final"]
-            mol = optimization[state][i]['ase']
-            mol.calc = x.Gmodels[state].SUPERCALC
-            prot_Gs.append(mol.get_potential_energy())
-            prot_energies_kcal.append((mol.get_potential_energy() * 23.06035))
-            opt_indices_prot.append(optimization[state][i]['conf'])
-            
-        optimised_probabilities = x.boltzmann_dist(np.array(prot_Gs))
-        most_probable_prot = np.argmax(optimised_probabilities)
-        energy_most_probable = prot_energies_kcal[most_probable_prot]
-        closest = np.where((np.array(prot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(prot_energies_kcal) <= energy_most_probable + 1.0))[0]
-        if len(closest) != 1:
-            prot_indices = list(set([most_probable_prot] + closest.tolist()))
-        else:
-            prot_indices = [most_probable_prot]
-        
         #set up dictionary to record what we need
         probable_conformers = {}
         probable_conformers['prot_aq'] = {}
         probable_conformers['deprot_aq'] = {}
-        if len(prot_indices) == 1:
-            probable_conformers['prot_aq'][0] = {"G_kcal": prot_energies_kcal[prot_indices[0]],
-                                      "G_eV": prot_Gs[prot_indices[0]],
-                                      "ase": optimization['prot_aq'][prot_indices[0]]['ase'],
-                                      "probability": optimised_probabilities[prot_indices[0]],
-                                       "conf": optimization['prot_aq'][prot_indices[0]]['conf']} # get number of original conf to track the xyz file
-        else:
-            for struct in range(len(prot_indices)):
-                probable_conformers['prot_aq'][struct] = {"G_kcal": prot_energies_kcal[prot_indices[struct]],
-                                          "G_eV": prot_Gs[prot_indices[struct]],
-                                          "ase": optimization['prot_aq'][prot_indices[struct]]['ase'],
-                                          "probability": optimised_probabilities[prot_indices[struct]],
-                                           "conf": optimization['prot_aq'][prot_indices[struct]]['conf']}
         
-        for i in optimization["deprot_aq"]:
-            #G_deprot = optimization["deprot_aq"][i]["Final"]
-            mol = optimization[state][i]['ase']
-            mol.calc = x.Gmodels[state].SUPERCALC
-            deprot_Gs.append(mol.get_potential_energy())
-            deprot_energies_kcal.append((mol.get_potential_energy() * 23.06035))
-            opt_indices_deprot.append(optimization[state][i]['conf'])
-        optimised_probabilities = x.boltzmann_dist(np.array(deprot_Gs))
-        most_probable_deprot = np.argmax(optimised_probabilities)
-        energy_most_probable = deprot_energies_kcal[most_probable_deprot]
-        closest = np.where((np.array(deprot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(deprot_energies_kcal) <= energy_most_probable + 1.0))[0]
-        if len(closest) != 1:
-            deprot_indices = list(set([most_probable_deprot] + closest.tolist()))
-        else:
-            deprot_indices = [most_probable_deprot]    
+        for state in ['prot_aq', 'deprot_aq']:
+            for i in optimization[state]:
+                #G_prot = optimization["prot_aq"][i]["Final"]
+                mol = optimization[state][i]['ase']
+                mol.calc = x.Gmodels[state].SUPERCALC
+                prot_Gs.append(mol.get_potential_energy())
+                prot_energies_kcal.append((mol.get_potential_energy() * 23.06035))
+                opt_indices_prot.append(optimization[state][i]['conf'])
+            
+            if state == 'prot_aq':
+                optimised_probabilities = x.boltzmann_dist(np.array(prot_Gs))
+                most_probable_prot = np.argmax(optimised_probabilities)
+                energy_most_probable = prot_energies_kcal[most_probable_prot]
+                closest = np.where((np.array(prot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(prot_energies_kcal) <= energy_most_probable + 1.0))[0]
+                if len(closest) != 1:
+                    prot_indices = list(set([most_probable_prot] + closest.tolist()))
+                else:
+                    prot_indices = [most_probable_prot]
+                
+                if len(prot_indices) == 1:
+                    probable_conformers['prot_aq'][0] = {"G_kcal": prot_energies_kcal[prot_indices[0]],
+                                              "G_eV": prot_Gs[prot_indices[0]],
+                                              "ase": optimization['prot_aq'][prot_indices[0]]['ase'],
+                                              "probability": optimised_probabilities[prot_indices[0]],
+                                               "conf": optimization['prot_aq'][prot_indices[0]]['conf']} # get number of original conf to track the xyz file
+                else:
+                    for struct in range(len(prot_indices)):
+                        probable_conformers['prot_aq'][struct] = {"G_kcal": prot_energies_kcal[prot_indices[struct]],
+                                                  "G_eV": prot_Gs[prot_indices[struct]],
+                                                  "ase": optimization['prot_aq'][prot_indices[struct]]['ase'],
+                                                  "probability": optimised_probabilities[prot_indices[struct]],
+                                                   "conf": optimization['prot_aq'][prot_indices[struct]]['conf']}
         
-        if len(deprot_indices) == 1:
-            probable_conformers['deprot_aq'][0] = {"G_kcal": deprot_energies_kcal[deprot_indices[0]],
-                                      "G_eV": deprot_Gs[deprot_indices[0]],
-                                      "ase": optimization['deprot_aq'][deprot_indices[0]]['ase'],
-                                       "conf": optimization['deprot_aq'][prot_indices[0]]['conf']
-                                       }
-        else:
-            for struct in range(len(deprot_indices)):
-                probable_conformers['deprot_aq'][struct] = {"G_kcal": deprot_energies_kcal[deprot_indices[struct]],
-                                          "G_eV": deprot_Gs[deprot_indices[struct]],
-                                          "ase": optimization['deprot_aq'][deprot_indices[struct]]['ase'],
-                                           "conf": optimization['deprot_aq'][deprot_indices[struct]]['conf']}    
+            elif state == 'deprot_aq':
+                optimised_probabilities = x.boltzmann_dist(np.array(deprot_Gs))
+                most_probable_deprot = np.argmax(optimised_probabilities)
+                energy_most_probable = deprot_energies_kcal[most_probable_deprot]
+                closest = np.where((np.array(deprot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(deprot_energies_kcal) <= energy_most_probable + 1.0))[0]
+                if len(closest) != 1:
+                    deprot_indices = list(set([most_probable_deprot] + closest.tolist()))
+                else:
+                    deprot_indices = [most_probable_deprot]    
+                
+                if len(deprot_indices) == 1:
+                    probable_conformers['deprot_aq'][0] = {"G_kcal": deprot_energies_kcal[deprot_indices[0]],
+                                              "G_eV": deprot_Gs[deprot_indices[0]],
+                                              "ase": optimization['deprot_aq'][deprot_indices[0]]['ase'],
+                                               "conf": optimization['deprot_aq'][prot_indices[0]]['conf']
+                                               }
+                else:
+                    for struct in range(len(deprot_indices)):
+                        probable_conformers['deprot_aq'][struct] = {"G_kcal": deprot_energies_kcal[deprot_indices[struct]],
+                                                  "G_eV": deprot_Gs[deprot_indices[struct]],
+                                                  "ase": optimization['deprot_aq'][deprot_indices[struct]]['ase'],
+                                                   "conf": optimization['deprot_aq'][deprot_indices[struct]]['conf']}    
     
     
 # =============================================================================
