@@ -487,7 +487,7 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
-    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    for idx in [2,3,4,5,6,7,9,10,11]:
     #for idx in [1]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
@@ -557,7 +557,7 @@ if __name__ == "__main__":
         most_probable_prot = np.argmax(optimised_probabilities)
         energy_most_probable = prot_energies_kcal[most_probable_prot]
         closest = np.where((np.array(prot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(prot_energies_kcal) <= energy_most_probable + 1.0))[0]
-        if len(closest.shape) != 1:
+        if len(closest) != 1:
             prot_indices = list(set([most_probable_prot] + closest.tolist()))
         else:
             prot_indices = [most_probable_prot]
@@ -591,20 +591,20 @@ if __name__ == "__main__":
         most_probable_deprot = np.argmax(optimised_probabilities)
         energy_most_probable = deprot_energies_kcal[most_probable_deprot]
         closest = np.where((np.array(deprot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(deprot_energies_kcal) <= energy_most_probable + 1.0))[0]
-        if len(closest.shape) != 1:
+        if len(closest) != 1:
             deprot_indices = list(set([most_probable_deprot] + closest.tolist()))
         else:
             deprot_indices = [most_probable_deprot]    
         
         if len(deprot_indices) == 1:
-            probable_conformers['deprot_aq'][0] = {"G_kcal": deprot_energies_kcal[prot_indices[0]],
+            probable_conformers['deprot_aq'][0] = {"G_kcal": deprot_energies_kcal[deprot_indices[0]],
                                       "G_eV": deprot_Gs[deprot_indices[0]],
                                       "ase": optimization['deprot_aq'][deprot_indices[0]]['ase'],
                                        "conf": optimization['deprot_aq'][prot_indices[0]]['conf']
                                        }
         else:
-            for struct in range(len(deprot_indices)-1):
-                probable_conformers['deprot_aq'][struct] = {"G_kcal": deprot_energies_kcal[prot_indices[struct]],
+            for struct in range(len(deprot_indices)):
+                probable_conformers['deprot_aq'][struct] = {"G_kcal": deprot_energies_kcal[deprot_indices[struct]],
                                           "G_eV": deprot_Gs[deprot_indices[struct]],
                                           "ase": optimization['deprot_aq'][deprot_indices[struct]]['ase'],
                                            "conf": optimization['deprot_aq'][deprot_indices[struct]]['conf']}    
@@ -685,40 +685,43 @@ if __name__ == "__main__":
                         mol = probable_conformers[state][i]['ase']
                         mol.calc = x.Gmodels[state].SUPERCALC
                         mol.write(f"{x.work_folder}/FINAL_{idx}_{state}_{confs[i]}.xyz")
-                        test_mol.append((mol, probable_conformers[state]['G_kcal']))
+                        test_mol.append((mol, probable_conformers[state][i]['G_kcal']))
                 for mol_1, mol_2 in combinations(test_mol, 2):
                     rmsd = orca_parser.calc_rmsd(mol_1[0].positions, mol_2[0].positions)
                     if rmsd < 0.1:
                         if mol_1[1] < mol_2[1]:
                             if state == 'deprot_aq':
-                                if mol_2 in keep_deprot:
-                                    keep_deprot.remove(mol_2)
-                                keep_deprot.append(mol_1)
+                                if mol_2[1] in keep_deprot:
+                                    keep_deprot.remove(mol_2[1])
+                                keep_deprot.append(mol_1[1])
                             else:
-                                if mol_2 in keep_prot:
-                                    keep_prot.remove(mol_2)
-                                keep_prot.append(mol_1)
+                                if mol_2[1] in keep_prot:
+                                    keep_prot.remove(mol_2[1])
+                                keep_prot.append(mol_1[1])
                         else:
                             if state == 'deprot_aq':
-                                if mol_1 in keep_deprot:
-                                    keep_deprot.remove(mol_1)
-                                keep_deprot.append(mol_2)
+                                if mol_1[1] in keep_deprot:
+                                    keep_deprot.remove(mol_1[1])
+                                keep_deprot.append(mol_2[1])
                             else:
-                                if mol_1 in keep_prot:
-                                    keep_prot.remove(mol_1)
-                                keep_prot.append(mol_2)
+                                if mol_1[1] in keep_prot:
+                                    keep_prot.remove(mol_1v)
+                                keep_prot.append(mol_2[1])
                     else:
                         if state == 'deprot_aq':
-                            keep_deprot.append(mol_1)
-                            keep_deprot.append(mol_2)
+                            keep_deprot.append(mol_1[1])
+                            keep_deprot.append(mol_2[1])
                         else:
-                            keep_prot.append(mol_1)
-                            keep_prot.append(mol_2)
+                            keep_prot.append(mol_1[1])
+                            keep_prot.append(mol_2[1])
                             
+            #ensure no duplicate structures
+            keep_prot = list(set(keep_prot))
+            keep_deprot = list(set(keep_deprot))
             
             # Get boltzmann of remaining structures
-            keep_prot_energies_kcal = [x[1] for x in keep_prot]
-            keep_deprot_energies_kcal = [x[1] for x in keep_deprot]
+            keep_prot_energies_kcal = [x for x in keep_prot]
+            keep_deprot_energies_kcal = [x for x in keep_deprot]
             
             keep_prot_energies_eV = [(x/23.06035) for x in keep_prot_energies_kcal]
             keep_deprot_energies_eV = [(x/23.06035) for x in keep_deprot_energies_kcal]
@@ -728,8 +731,8 @@ if __name__ == "__main__":
             
             pKas_weighting = {}
             count = 0
-            for i,prot in enumerate(keep_prot_energies_eV):
-                for j,deprot in enumerate(keep_deprot_energies_eV):
+            for i,prot in enumerate(keep_prot_energies_kcal):
+                for j,deprot in enumerate(keep_deprot_energies_kcal):
                     
                     G_deprot = deprot
                     G_prot = prot
@@ -755,7 +758,8 @@ if __name__ == "__main__":
             predictions.at[idx, "Pred"] = guess_pka
             predictions.at[idx, "Target"] = x.pKas.at[idx, "pKa"]
             predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
-            
+
+    sys.exit()            
 # =============================================================================
 #             for label, G in zip(["deprot_aq", "prot_aq"], [G_deprot, G_prot]):
 #                 yatesG = (x.yates_mols[idx][label]["ase"].get_potential_energy()* 23.06035)
