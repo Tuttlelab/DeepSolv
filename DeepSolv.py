@@ -581,8 +581,7 @@ class pKa:
         energies = self.guesses_energies(idx, state, asemol_guesses)
         keep = [np.argmin(energies)]
         keep.append(np.argmax(RMSD[keep[0]]))
-        keep.append(np.argmax(RMSD[keep].mean(axis=0))) #3rd
-        for i in range(10):
+        for i in range(keep_n_confs-2):
             keep.append(np.argmax(RMSD[keep].mean(axis=0))) # ith
         
         for i in range(len(keep)):
@@ -613,8 +612,8 @@ if __name__ == "__main__":
     
     
     predictions = pandas.DataFrame()
-    for idx in [2]:
-    #for idx in [1,2,3]:
+    #for idx in [2]:
+    for idx in [1,2,3,4,5,6,7,9,10,11]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -636,7 +635,7 @@ if __name__ == "__main__":
                     except TypeError:
                         indices = np.array([indices])
                 else:
-                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 1)
+                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 13)
                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
                 
                 
@@ -723,6 +722,10 @@ if __name__ == "__main__":
             with open(pkl_opt, 'wb') as f:
                 pickle.dump(optimization, f)
         #sys.exit()
+        yates = {}
+        for state in ["deprot_aq", "prot_aq"]:
+            x.yates_mols[idx][state]["ase"].calc = x.Gmodels[state].SUPERCALC
+            yates[state] = (x.yates_mols[idx][state]["ase"].get_potential_energy()* 23.06035)
         
         #print(optimization)
         prot_Gs = []
@@ -733,7 +736,7 @@ if __name__ == "__main__":
             plt.plot(optimization["prot_aq"][i]["G"], label=f"prot_{i}")
             prot_Gs.append(G_prot)
         plt.legend()
-        plt.title("prot_aq")
+        plt.title(f"{idx} prot_aq")
         plt.show()
         for i in optimization["deprot_aq"]:
             #G_deprot = optimization["deprot_aq"][i]["Final"]
@@ -741,18 +744,18 @@ if __name__ == "__main__":
             G_deprot = optimization["deprot_aq"][i]["G"].min()
             deprot_Gs.append(G_deprot)
         plt.legend()
-        plt.title("deprot_aq")
+        plt.title(f"{idx} deprot_aq")
         plt.show()
         
-
-        
-        for state in ["deprot_aq", "prot_aq"]:
-            if state == "deprot_aq":    
-                conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
-            else:
-                conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
-            final_mol = read(f"{x.work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
-            final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
+# =============================================================================
+#         for state in ["deprot_aq", "prot_aq"]:
+#             if state == "deprot_aq":    
+#                 conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
+#             else:
+#                 conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
+#             final_mol = read(f"{x.work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
+#             final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
+# =============================================================================
         
         
         
@@ -765,9 +768,9 @@ if __name__ == "__main__":
         predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
      
         
-        for label, G in zip(["deprot_aq", "prot_aq"], [G_deprot, G_prot]):
-            yatesG = (x.yates_mols[idx][label]["ase"].get_potential_energy()* 23.06035)
-            print(idx, label, G - yatesG, end=" ")
+        for state, G in zip(["deprot_aq", "prot_aq"], [G_deprot, G_prot]):
+            yatesG = yates[state]
+            print(idx, state, G - yatesG, end=" ")
             if G > yatesG:
                 print("(yates' lower, underoptimized)")
             else:
