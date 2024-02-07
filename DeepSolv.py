@@ -2,7 +2,7 @@
 
 from ase import Atoms
 from ase.calculators.mixing import SumCalculator, MixedCalculator
-#from ase.optimize import LBFGS
+from ase.optimize import BFGS
 import pathlib
 from ase.build import minimize_rotation_and_translation
 from ase.io import read
@@ -256,7 +256,7 @@ class pKa:
         E0 = np.zeros((natoms, 3))
         E0[:] = self.input_structures[idx][state].get_potential_energy()* 23.06035
         if drs is None:
-            drs = [0.1, 0.01, 0.001] #+ [-0.01, -0.001]
+            drs = [0.001] #+ [-0.01, -0.001]
             #drs = [0.01, 0.001]
             #drs = [0.01]
         mol = self.input_structures[idx][state].copy()
@@ -272,7 +272,17 @@ class pKa:
                 for dim in range(dims):
                     T[conformer, atom, dim] += dr
                     conformer += 1
-                    
+# =============================================================================
+#         # DEBUG
+#         # Check the solution is making the right changes for the force calculations
+#         self.T = T
+#         force_confs = T.numpy()
+#         for i in range(force_confs.shape[0]):
+#             conf = Atoms(mol.get_chemical_symbols(), force_confs[i])
+#             conf.write(f"{x.work_folder}/Forces_{idx}_{state}.xyz", append = (i!=0))
+#         sys.exit()
+# =============================================================================
+        
         # Number of neural network core-jobs required is (natoms**2) * dimensions * drs
         species_tensors = self.Gmodels[state].species_to_tensor(mol.get_chemical_symbols())
         species_tensors = species_tensors.repeat(nconfs).reshape(nconfs, natoms)
@@ -283,15 +293,18 @@ class pKa:
         MultiChemSymbols = np.tile(mol.get_chemical_symbols(), nconfs).reshape(nconfs, -1)
         self.Gmodels[state].MultiChemSymbols = MultiChemSymbols
 
-        batch_dE = self.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=False) # return_all is about all models, not all conformers            
+        batch_dE = self.Gmodels[state].ProcessTensors(units="eV", return_all=False) # return_all is about all models, not all conformers            
         batch_dE = batch_dE.reshape((len(drs), natoms, 3))
         batch_dE = batch_dE - E0
+        
+
         
         batch_Forces = np.ndarray((len(drs), natoms, 3))
         for i in range(batch_Forces.shape[0]):
             batch_Forces[i] = batch_dE[i] / drs[i]
             batch_Forces[i] -= batch_Forces[i].min(axis=0)
-        return batch_Forces.mean(axis=0)
+            
+        return batch_Forces.mean(axis=0) 
     
     def Min_conjugateGD(self, idx: int, state: str, fix_atoms: list = [], reload_fmax=True, Plot=True, traj_ext=""):
         
@@ -407,11 +420,28 @@ class pKa:
             reload_fmax=True, reload_gmin=False,
             Plot=True, traj_ext=""):
         print("Optimizing:", idx, state)
-        maxstep = 0.009
-        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+        #maxstep = 0.055
+        #trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
-        self.input_structures[idx][state].write(trajfile, append=False)
-
+        #self.input_structures[idx][state].write(trajfile, append=False)
+        
+        
+        opt = BFGS(self.input_structures[idx][state], maxstep=0.035)
+        opt.initialize()
+        
+        Y = [self.input_structures[idx][state].get_potential_energy() * 23.06035]
+        Fmax = []
+        #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=False)
+        for i in tqdm.tqdm(range(100)):
+            Forces = -self.get_forces(idx, state)
+            Fmax.append(np.abs(Forces).max())
+            opt.step(f=Forces)
+            #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=True)
+            Y.append(self.input_structures[idx][state].get_potential_energy() * 23.06035)
+        self.o = opt
+        
+        return np.array(Y), np.array(Fmax)
+        sys.exit()
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
         
@@ -476,7 +506,7 @@ class pKa:
     def fname_guesses(self, idx, state):
         return f"{self.work_folder}/{idx}_{state}_initial_guesses.xyz"
     
-    def generate_confs(self, idx, state):
+    def generate_confs(self, idx, state, nconfs=1000):
         Connections = self.find_connections(idx, state)
         asemol = self.yates_mols[idx][state]["ase"].copy()
         atom_symbols = asemol.get_chemical_symbols()
@@ -519,8 +549,8 @@ class pKa:
         clearConfs = True
         NumConfs = 0
         pruneRmsThresh = 1.0
-        with tqdm.tqdm(total = 1000) as pbar:
-            while NumConfs < 1000:
+        with tqdm.tqdm(total = nconfs) as pbar:
+            while NumConfs < nconfs:
                 cids = AllChem.EmbedMultipleConfs(mol, # This doesnt include hydrogens in the RMS calculation!!
                                                   clearConfs=clearConfs,
                                                   numConfs=20, 
@@ -580,10 +610,12 @@ class pKa:
 
         energies = self.guesses_energies(idx, state, asemol_guesses)
         keep = [np.argmin(energies)]
-        keep.append(np.argmax(RMSD[keep[0]]))
-        for i in range(keep_n_confs-2):
-            keep.append(np.argmax(RMSD[keep].mean(axis=0))) # ith
-        
+        if keep_n_confs > 1:
+            keep.append(np.argmax(RMSD[keep[0]]))
+            if keep_n_confs > 2:
+                for i in range(keep_n_confs-2):
+                    keep.append(np.argmax(RMSD[keep].mean(axis=0))) # ith
+        assert len(keep) == keep_n_confs
         for i in range(len(keep)):
             asemol_guesses[i].write(self.fname_filtered(idx, state), append = (i!=keep[0]))
         return keep
@@ -603,7 +635,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
     #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
-    x.load_models("TrainDNN/models/uncleaned", "best.pt"); x.work_folder = "Calculations/Alex"
+    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/Alex"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -612,20 +644,24 @@ if __name__ == "__main__":
     
     
     predictions = pandas.DataFrame()
-    #for idx in [2]:
+    #for idx in [1,2,11]:
     for idx in [1,2,3,4,5,6,7,9,10,11]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
+# =============================================================================
+#         if os.path.exists(pkl_opt):
+#             os.remove(pkl_opt)
+# =============================================================================
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
             optimization = pickle.load(open(pkl_opt, 'rb'))
         else:
             optimization = {}
-            for state in ["deprot_aq", "prot_aq"]:
+            for state in ["prot_aq"] + ["deprot_aq"]:
                 optimization[state] = {}
                 if os.path.exists(x.fname_guesses(idx, state)): # reload
                     asemol_guesses = read(x.fname_guesses(idx, state), index=":")
                 else:
-                    asemol_guesses = x.generate_confs(idx, state)
+                    asemol_guesses = x.generate_confs(idx, state, nconfs=100)
                 
                 
                 if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
@@ -635,7 +671,7 @@ if __name__ == "__main__":
                     except TypeError:
                         indices = np.array([indices])
                 else:
-                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 13)
+                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 5)
                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
                 
                 
@@ -735,29 +771,24 @@ if __name__ == "__main__":
             G_prot = optimization["prot_aq"][i]["G"].min()
             plt.plot(optimization["prot_aq"][i]["G"], label=f"prot_{i}")
             prot_Gs.append(G_prot)
+        plt.plot(np.arange(optimization["prot_aq"][i]["G"].shape[0]), [yates["prot_aq"]]*optimization["prot_aq"][i]["G"].shape[0], label="yates DNN G val")
+        plt.plot(np.arange(optimization["prot_aq"][i]["G"].shape[0]), [x.yates_mols[idx]["prot_aq"]["DFT G"]]*optimization["prot_aq"][i]["G"].shape[0], label="yates DFT G val")
         plt.legend()
         plt.title(f"{idx} prot_aq")
         plt.show()
         for i in optimization["deprot_aq"]:
             #G_deprot = optimization["deprot_aq"][i]["Final"]
-            plt.plot(optimization["deprot_aq"][i]["G"], label=f"deprot_{i}")
             G_deprot = optimization["deprot_aq"][i]["G"].min()
+            plt.plot(optimization["deprot_aq"][i]["G"], label=f"deprot_{i}")
+            
             deprot_Gs.append(G_deprot)
+        plt.plot(np.arange(optimization["deprot_aq"][i]["G"].shape[0]), [yates["deprot_aq"]]*optimization["deprot_aq"][i]["G"].shape[0], label="yates DNN G val")
+        plt.plot(np.arange(optimization["deprot_aq"][i]["G"].shape[0]), [x.yates_mols[idx]["deprot_aq"]["DFT G"]]*optimization["deprot_aq"][i]["G"].shape[0], label="yates DFT G val")
         plt.legend()
         plt.title(f"{idx} deprot_aq")
         plt.show()
         
-# =============================================================================
-#         for state in ["deprot_aq", "prot_aq"]:
-#             if state == "deprot_aq":    
-#                 conformer = list(optimization[state].keys())[np.argmin(deprot_Gs)]
-#             else:
-#                 conformer = list(optimization[state].keys())[np.argmin(prot_Gs)]
-#             final_mol = read(f"{x.work_folder}/Min_{idx}_{state}_{conformer}.xyz", index=np.argmin(optimization[state][conformer]["Fmax"]))
-#             final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
-# =============================================================================
-        
-        
+
         
         G_deprot = min(deprot_Gs)
         G_prot = min(prot_Gs)
