@@ -6,7 +6,7 @@ from ase.optimize import BFGS
 import pathlib
 from ase.build import minimize_rotation_and_translation
 from ase.io import read
-from sklearn.metrics import mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
+from sklearn.metrics import root_mean_squared_error, mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
 import torch
 import json
 import pandas
@@ -98,7 +98,7 @@ class pKa:
                                             training_config=training_config, next_gen=False)
                 self.Gmodels[key].GenModel(species_order)
             self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")
-            print(f"{key} Checkpoint:  {fullpath} loaded successfully")
+            #print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
 
     def load_yates(self):
@@ -132,8 +132,8 @@ class pKa:
             guess_pKa = ((deprot_aq_G) - ((prot_aq_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
             self.yates_unopt_pKa.at[mol_index, "DFT_unopt_pKa_pred"] = guess_pKa
             self.yates_unopt_pKa.at[mol_index, "Yates_pKa_lit"] = self.pKas.at[mol_index, "Yates"]
-        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
-        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
+        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
+        self.yates_unopt_pKa.at['RMSE', "RMSE"] = root_mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
         self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
             
             
@@ -635,7 +635,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
     #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
-    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/Alex"
+    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/crest_testing_Es"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -644,8 +644,11 @@ if __name__ == "__main__":
     
     
     predictions = pandas.DataFrame()
-    #for idx in [1,2,11]:
-    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    conformer_numbers = {}
+    conformer_numbers['prot_aq'] = {}
+    conformer_numbers['deprot_aq'] = {}
+    for idx in [2,7]:
+    #for idx in [1,2,3,4,5,6,7,9,10,11]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
 # =============================================================================
 #         if os.path.exists(pkl_opt):
@@ -658,24 +661,33 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq"] + ["deprot_aq"]:
                 optimization[state] = {}
-                if os.path.exists(x.fname_guesses(idx, state)): # reload
-                    asemol_guesses = read(x.fname_guesses(idx, state), index=":")
-                else:
-                    asemol_guesses = x.generate_confs(idx, state, nconfs=100)
-                
-                
-                if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
-                    indices = np.loadtxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")).astype(np.uint64)
-                    try:
-                        len(indices)
-                    except TypeError:
-                        indices = np.array([indices])
-                else:
-                    indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 5)
-                    np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
-                
-                
-                
+# =============================================================================
+#                 if os.path.exists(x.fname_guesses(idx, state)): # reload
+#                     asemol_guesses = read(x.fname_guesses(idx, state), index=":")
+#                 else:
+#                     asemol_guesses = x.generate_confs(idx, state, nconfs=100)
+#                 
+#                 
+#                 if os.path.exists(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")):
+#                     indices = np.loadtxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt")).astype(np.uint64)
+#                     try:
+#                         len(indices)
+#                     except TypeError:
+#                         indices = np.array([indices])
+#                 else:
+#                     indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 5)
+#                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
+# =============================================================================
+                if os.path.exists(f"crest/{idx}_{state}/crest_conformers.xyz"):
+                    asemol_guesses = read(f"crest/{idx}_{state}/crest_conformers.xyz", index=':')
+                    print('Crest Generated conformers loaded')
+                    
+                indices = []
+                count = 0
+                for i in range(len(asemol_guesses)):
+                    indices.append(i)
+                    count += 1
+                conformer_numbers[state][idx] = count
 # =============================================================================
 #                 
 #                 # Scan minimization
@@ -751,7 +763,7 @@ if __name__ == "__main__":
                     #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
-                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035
+                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035 / 627.5095
                                                }
 
  
@@ -816,10 +828,10 @@ if __name__ == "__main__":
     plt.xlabel("Predicted $pK_a$")
     plt.legend()
     plt.plot([21, 35], [21, 35], lw=1, color="black")
-    print("DFT RMSE:", mean_squared_error(predictions["Pred"], predictions["Target"], squared=False))
-    print("Yates RMSE:", mean_squared_error(predictions["Pred"], predictions["Yates"], squared=False))
+    print("DFT RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Target"]))
+    print("Yates RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Yates"]))
     print("DFT MAE:", mean_absolute_error(predictions["Pred"], predictions["Target"]))
-    print("Yates RMSE:", mean_absolute_error(predictions["Pred"], predictions["Yates"]))
+    print("Yates MAE:", mean_absolute_error(predictions["Pred"], predictions["Yates"]))
     print("DFT r2:", r2_score(predictions["Pred"], predictions["Target"]))
     print("Yates r2:", r2_score(predictions["Pred"], predictions["Yates"]))
     

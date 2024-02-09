@@ -2,10 +2,10 @@
 
 from ase import Atoms
 from ase.calculators.mixing import SumCalculator, MixedCalculator
-from ase.optimize import LBFGS
+from ase.optimize import LBFGS, BFGS
 from ase.build import minimize_rotation_and_translation
 from ase.io import read
-from sklearn.metrics import mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
+from sklearn.metrics import mean_squared_error, root_mean_squared_error, euclidean_distances, mean_absolute_error, r2_score
 import torch
 import json
 import pandas
@@ -90,8 +90,7 @@ class pKa:
                                             training_config=training_config, next_gen=False)
                 self.Gmodels[key].GenModel(species_order)
             self.Gmodels[key].load_checkpoint(fullpath, typ="Energy")
-            #print(f"{key} Checkpoint:  {fullpath} loaded successfully")
-
+            print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
     def load_yates(self):
         self.G_H = -4.39
@@ -124,8 +123,8 @@ class pKa:
             guess_pKa = ((deprot_aq_G) - ((prot_aq_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
             self.yates_unopt_pKa.at[mol_index, "DFT_unopt_pKa_pred"] = guess_pKa
             self.yates_unopt_pKa.at[mol_index, "Yates_pKa_lit"] = self.pKas.at[mol_index, "Yates"]
-        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=True)
-        self.yates_unopt_pKa.at['RMSE', "RMSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna(), squared=False)
+        self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
+        self.yates_unopt_pKa.at['RMSE', "RMSE"] = root_mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
         self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
             
             
@@ -283,80 +282,171 @@ class pKa:
             batch_Forces[i] -= batch_Forces[i].min(axis=0)
         return batch_Forces.mean(axis=0)
     
-        
     def Min(self, idx: int, state: str, fix_atoms: list = [], 
             reload_fmax=True, reload_gmin=False,
             Plot=True, traj_ext=""):
-        maxstep = 0.02
-        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+        print("Optimizing:", idx, state)
+        #maxstep = 0.055
+        #trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
-        self.input_structures[idx][state].write(trajfile, append=False)
-
-        Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
+        #self.input_structures[idx][state].write(trajfile, append=False)
+        
+        
+        opt = BFGS(self.input_structures[idx][state], maxstep=0.035)
+        opt.initialize()
+        
+        Y = [self.input_structures[idx][state].get_potential_energy() * 23.06035]
         Fmax = []
-        
-        nsteps = 500
-        
-        for minstep in tqdm.tqdm(range(nsteps)):
-            reset_pos = self.input_structures[idx][state].positions.copy()
-            Forces = self.get_forces(idx, state)
-            for atom_indice in fix_atoms:
-                #Forces[atom_indice] = [0,0,0]
-                pass
+        #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=False)
+        for i in tqdm.tqdm(range(100)):
+            Forces = -self.get_forces(idx, state)
             Fmax.append(np.abs(Forces).max())
-            Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
-            if len(fix_atoms) > 0:
-                Forces[fix_atoms] = 0
-            step = (Forces / Forces.max()) * maxstep
-# =============================================================================
-#             SGD = np.random.random(step.shape)
-#             SGD += 0.1
-#             SGD = SGD.round()
-#             step *= SGD
-# =============================================================================
-            
-            self.input_structures[idx][state].positions -= step
-            self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
-            self.input_structures[idx][state].write(trajfile, append=True)
-            
-            if len(Y) > 5:
-                # Gromacs algorithm
-                if (Y[-1] - Y[-2]) > 0: # The energy increased after the last step
-                    maxstep *= 0.8
-                    #print("Maxstep:", maxstep)
-                    self.input_structures[idx][state].positions = reset_pos.copy()
-                    Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
-                elif maxstep < 0.1: # put a limit on how high the maxstep can climb
-                    maxstep *= 1.1
-                if maxstep < 0.001:
-                    break
-
-        if reload_fmax:
-            print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
-            self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
-            self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
-        elif reload_gmin:
-            print("Reloading at Gmin=", np.min(Y), np.argmin(Y))
-            self.input_structures[idx][state] = read(trajfile, index=np.argmin(Y))
-            self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC            
+            opt.step(f=Forces)
+            #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=True)
+            Y.append(self.input_structures[idx][state].get_potential_energy() * 23.06035)
+        self.o = opt
         
-        Y = np.array(Y)
-        Fmax = np.array(Fmax)
-        if Plot:
-            dY = Y-Y[0]
-            dFmax = Fmax-Fmax[0]
-            plt.plot(dY, label="dG")
-            plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300, label="Force Min")
-            plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300, label="Free Energy Min")
-            plt.ylabel("$\\Delta$G")
-            plt.legend()
-            #plt.plot(dFmax)
-            plt.title(f"{idx}_{state}")
-            plt.tight_layout()
-            plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
-            
-            plt.show()
-        return Y, Fmax
+        return np.array(Y), np.array(Fmax)
+# =============================================================================
+#         sys.exit()
+#         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
+#         Fmax = []
+#         
+#         nsteps = 100
+#         
+#         for minstep in tqdm.tqdm(range(nsteps)):
+#             reset_pos = self.input_structures[idx][state].positions.copy()
+#             Forces = self.get_forces(idx, state)
+#             for atom_indice in fix_atoms:
+#                 #Forces[atom_indice] = [0,0,0]
+#                 pass
+#             Fmax.append(np.abs(Forces).max())
+#             Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
+#             if len(fix_atoms) > 0:
+#                 Forces[fix_atoms] = 0
+#             step = (Forces / np.abs(Forces).max()) * maxstep
+# 
+#             self.input_structures[idx][state].positions -= step
+#             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+#             self.input_structures[idx][state].write(trajfile, append=True)
+#             
+#             if len(Y) > 5:
+#                 # Gromacs algorithm
+#                 if Y[-1] > Y[-2]: # The energy increased after the last step
+#                 #if (Fmax[-1] - Fmax[-2]) > 0: # The energy increased after the last step
+#                     maxstep *= 0.2
+#                     #print("Maxstep:", maxstep)
+#                     self.input_structures[idx][state].positions = reset_pos.copy()
+#                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
+#                 elif maxstep < 0.1: # put a limit on how high the maxstep can climb
+#                     maxstep *= 1.2
+#                 if maxstep < 0.001:
+#                     break
+# 
+#         if reload_fmax:
+#             print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
+#             self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
+#             self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
+#         elif reload_gmin:
+#             print("Reloading at Gmin=", np.min(Y), np.argmin(Y))
+#             self.input_structures[idx][state] = read(trajfile, index=np.argmin(Y))
+#             self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC            
+#         
+#         Y = np.array(Y)
+#         Fmax = np.array(Fmax)
+#         if Plot:
+#             dY = Y-Y[0]
+#             dFmax = Fmax-Fmax[0]
+#             plt.plot(dY, label="dG")
+#             plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300, label="Force Min")
+#             plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300, label="Free Energy Min")
+#             plt.ylabel("$\\Delta$G")
+#             plt.legend()
+#             #plt.plot(dFmax)
+#             plt.title(f"{idx}_{state}")
+#             plt.tight_layout()
+#             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
+#             
+#             plt.show()
+#         return Y, Fmax
+# =============================================================================
+    
+        
+# =============================================================================
+#     def Min(self, idx: int, state: str, fix_atoms: list = [], 
+#             reload_fmax=True, reload_gmin=False,
+#             Plot=True, traj_ext=""):
+#         maxstep = 0.02
+#         trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+#         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+#         self.input_structures[idx][state].write(trajfile, append=False)
+# 
+#         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
+#         Fmax = []
+#         
+#         nsteps = 500
+#         
+#         for minstep in tqdm.tqdm(range(nsteps)):
+#             reset_pos = self.input_structures[idx][state].positions.copy()
+#             Forces = self.get_forces(idx, state)
+#             for atom_indice in fix_atoms:
+#                 #Forces[atom_indice] = [0,0,0]
+#                 pass
+#             Fmax.append(np.abs(Forces).max())
+#             Y.append(self.input_structures[idx][state].get_potential_energy()* 23.06035)
+#             if len(fix_atoms) > 0:
+#                 Forces[fix_atoms] = 0
+#             step = (Forces / Forces.max()) * maxstep
+# # =============================================================================
+# #             SGD = np.random.random(step.shape)
+# #             SGD += 0.1
+# #             SGD = SGD.round()
+# #             step *= SGD
+# # =============================================================================
+#             
+#             self.input_structures[idx][state].positions -= step
+#             self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
+#             self.input_structures[idx][state].write(trajfile, append=True)
+#             
+#             if len(Y) > 5:
+#                 # Gromacs algorithm
+#                 if (Y[-1] - Y[-2]) > 0: # The energy increased after the last step
+#                     maxstep *= 0.8
+#                     #print("Maxstep:", maxstep)
+#                     self.input_structures[idx][state].positions = reset_pos.copy()
+#                     Y[-1] = self.input_structures[idx][state].get_potential_energy()* 23.06035
+#                 elif maxstep < 0.1: # put a limit on how high the maxstep can climb
+#                     maxstep *= 1.1
+#                 if maxstep < 0.001:
+#                     break
+# 
+#         if reload_fmax:
+#             print("Reloading at Fmax=", np.min(Fmax), np.argmin(Fmax))
+#             self.input_structures[idx][state] = read(trajfile, index=np.argmin(Fmax))
+#             self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
+#         elif reload_gmin:
+#             print("Reloading at Gmin=", np.min(Y), np.argmin(Y))
+#             self.input_structures[idx][state] = read(trajfile, index=np.argmin(Y))
+#             self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC            
+#         
+#         Y = np.array(Y)
+#         Fmax = np.array(Fmax)
+#         if Plot:
+#             dY = Y-Y[0]
+#             dFmax = Fmax-Fmax[0]
+#             plt.plot(dY, label="dG")
+#             plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=300, label="Force Min")
+#             plt.scatter([np.argmin(Y)], [dY[np.argmin(Y)]], marker="1", color="blue", s=300, label="Free Energy Min")
+#             plt.ylabel("$\\Delta$G")
+#             plt.legend()
+#             #plt.plot(dFmax)
+#             plt.title(f"{idx}_{state}")
+#             plt.tight_layout()
+#             plt.savefig(f"{self.work_folder}/Min_{idx}_{state}.png")
+#             
+#             plt.show()
+#         return Y, Fmax
+# =============================================================================
     
 
     def generate_confs(self, idx, state):
@@ -477,7 +567,7 @@ if __name__ == "__main__":
     dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/models/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_1_only"
+    x.load_models("TrainDNN/models/L1_working/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_Crest_test_Es"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -487,8 +577,8 @@ if __name__ == "__main__":
     
 
     predictions = pandas.DataFrame()
-    #for idx in [1,2,3,4,5,6,7,9,10,11]:
-    for idx in [2]:
+    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    #for idx in [2]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
         if os.path.exists(pkl_opt):
             print("Reloading:", pkl_opt)
@@ -497,13 +587,17 @@ if __name__ == "__main__":
             optimization = {}
             for state in ["prot_aq", "deprot_aq"]:
                 optimization[state] = {}
-                asemol_guesses = x.generate_confs(idx, state)
+                
+                if os.path.exists(f"crest/{idx}_{state}/crest_conformers.xyz"):
+                    asemol_guesses = read(f"crest/{idx}_{state}/crest_conformers.xyz", index=':')
+                    
                 confs_eV = []
                 confs_kcal = []
                 for j in asemol_guesses:
                     j.calc = x.Gmodels[state].SUPERCALC
                     confs_eV.append(j.get_potential_energy())
-                    confs_kcal.append(j.get_potential_energy() * 23.06)
+                    confs_kcal.append(j.get_potential_energy() * 23.06035)
+                    
                 #boltzmann_dist = x.boltzmann_dist(confs_eV)
                 probabilities = x.boltzmann_dist(np.array(confs_eV)) # get boltzmann
                 highest_prob = np.argmax(probabilities) # get highest prob conf
@@ -526,7 +620,7 @@ if __name__ == "__main__":
                                               "Fmax": Fmax,
                                               "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035,
                                               "ase": x.input_structures[idx][state].copy(),
-                                               "conf": i}
+                                              "conf": i}
 
                 
             with open(pkl_opt, 'wb') as f:
@@ -595,7 +689,7 @@ if __name__ == "__main__":
                     probable_conformers['deprot_aq'][0] = {"G_kcal": deprot_energies_kcal[deprot_indices[0]],
                                               "G_eV": deprot_Gs[deprot_indices[0]],
                                               "ase": optimization['deprot_aq'][deprot_indices[0]]['ase'],
-                                               "conf": optimization['deprot_aq'][prot_indices[0]]['conf']
+                                               "conf": optimization['deprot_aq'][deprot_indices[0]]['conf']
                                                }
                 else:
                     for struct in range(len(deprot_indices)):
@@ -616,7 +710,7 @@ if __name__ == "__main__":
                     conformer = probable_conformers['deprot_aq'][0]['conf']
                 else:
                     conformer = probable_conformers['prot_aq'][0]['conf']
-                final_mol = probable_conformers[state][conformer]["ase"]
+                final_mol = probable_conformers[state][0]["ase"]
                 final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
             
             #Normal pKa calc from here
@@ -650,7 +744,7 @@ if __name__ == "__main__":
                         conformer = probable_conformers['deprot_aq'][0]['conf']
                     else:
                         conformer = probable_conformers['prot_aq'][0]['conf']
-                    final_mol = probable_conformers[state][conformer]["ase"]
+                    final_mol = probable_conformers[state][0]["ase"]
                     final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
                     continue
                 
@@ -699,7 +793,7 @@ if __name__ == "__main__":
                             keep_prot.append(mol_2[1])
             
             if len(probable_conformers['prot_aq']) == 1:
-                G_prot = prot_Gs[prot_indices[0]]
+                G_prot = [prot_Gs[prot_indices[0]]]
                 #ensure no duplicate structures
                 keep_deprot = list(set(keep_deprot))
                 
@@ -720,11 +814,11 @@ if __name__ == "__main__":
                         pKas_weighting[count] = {}
                         pKas_weighting[count]['prot'] = i
                         pKas_weighting[count]['deprot'] = j
-                        pKas_weighting[count]['prot_prob'] = boltzmann_prot[i]
+                        #pKas_weighting[count]['prot_prob'] = boltzmann_prot[i]
                         pKas_weighting[count]['deprot_prob'] = boltzmann_deprot[j]
-                        pKas_weighting[count]['total_weight'] = boltzmann_prot[i] + boltzmann_deprot[j]
+                        pKas_weighting[count]['total_weight'] = boltzmann_deprot[j]
                         pKas_weighting[count]['guess'] = guess_pka
-                        pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_prot[i] + boltzmann_deprot[j])
+                        pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_deprot[j])
                         count += 1
                         
                 total_weights = 0
@@ -740,7 +834,7 @@ if __name__ == "__main__":
                 predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
                 
             elif len(probable_conformers['deprot_aq']) == 1:
-                G_deprot = deprot_Gs[deprot_indices[0]]                           
+                G_deprot = [deprot_Gs[deprot_indices[0]]]
                 #ensure no duplicate structures
                 keep_prot = list(set(keep_prot))
                 
@@ -763,10 +857,10 @@ if __name__ == "__main__":
                         pKas_weighting[count]['prot'] = i
                         pKas_weighting[count]['deprot'] = j
                         pKas_weighting[count]['prot_prob'] = boltzmann_prot[i]
-                        pKas_weighting[count]['deprot_prob'] = boltzmann_deprot[j]
-                        pKas_weighting[count]['total_weight'] = boltzmann_prot[i] + boltzmann_deprot[j]
+                        #pKas_weighting[count]['deprot_prob'] = boltzmann_deprot[j]
+                        pKas_weighting[count]['total_weight'] = boltzmann_prot[i]
                         pKas_weighting[count]['guess'] = guess_pka
-                        pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_prot[i] + boltzmann_deprot[j])
+                        pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_prot[i])
                         count += 1
                         
                 total_weights = 0
@@ -858,8 +952,8 @@ if __name__ == "__main__":
     plt.xlabel("Predicted $pK_a$")
     plt.legend()
     plt.plot([21, 35], [21, 35], lw=1, color="black")
-    print("DFT RMSE:", mean_squared_error(predictions["Pred"], predictions["Target"], squared=False))
-    print("Yates RMSE:", mean_squared_error(predictions["Pred"], predictions["Yates"], squared=False))
+    print("DFT RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Target"]))
+    print("Yates RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Yates"]))
     print("DFT MAE:", mean_absolute_error(predictions["Pred"], predictions["Target"]))
     print("Yates RMSE:", mean_absolute_error(predictions["Pred"], predictions["Yates"]))
     print("DFT r2:", r2_score(predictions["Pred"], predictions["Target"]))
