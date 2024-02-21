@@ -28,7 +28,7 @@ if not os.path.exists("CompileG2HDF5_cache.pkl"):
     with orm.db_session:
         CompileG2HDF5 = orm.select((p.G, p.conf_id.coordinates, p.conf_id.species, p.dft_output.Charge, p.dft_output.Solvation) 
                                  for p in scotch_db.DFT.Energy if p.G < 0 and 
-                                 p.conf_id.nO < 4  and p.conf_id.nC > 0 and p.dft_output.Functional == "WB97X" and
+                                 p.conf_id.nO < 4  and p.conf_id.nC > 0 and p.conf_id.nIr < 1 and p.dft_output.Functional == "WB97X" and
                                  p.dft_output.Dispersion == "D4" and p.dft_output.def2J == True and p.dft_output.BasisSet == "def2-SVP" and
                                  (p.dft_output.Charge == 0 or p.dft_output.Charge == 1))
         CompileG2HDF5 = list(CompileG2HDF5)
@@ -45,7 +45,7 @@ else:
 # Load yates structures to make sure we dont have any of them in the training data
 yates = {}
 print("Loading Yates structures")
-for xyzfile in tqdm.tqdm(glob.glob("ValidationDS/DFT_water_outs/*.xyz")):
+for xyzfile in tqdm.tqdm(glob.glob("../../DeepSolvation/BuildDataset/ValidationDS/DFT_water_outs/*.xyz")):
     name = xyzfile.split("/")[1]
     mol = read(xyzfile)
     yates[name] = dict()

@@ -9,7 +9,7 @@ import torch, tqdm
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.metrics import euclidean_distances, mean_squared_error, mean_absolute_error
+from sklearn.metrics import euclidean_distances, root_mean_squared_error, mean_absolute_error
 from ase import Atoms
 import pandas, pickle
 
@@ -39,7 +39,7 @@ assert "prot_aq" in x.Gmodels
 x.load_yates()
 x.use_yates_structures()
 
-state = "deprot_aq"
+state = "prot_aq"
 calculator = x.Gmodels[state]
 # =============================================================================
 # h5 = h5py.File("BuildDataset/AqZ=0_rmsd=2.h5", 'r')
@@ -66,7 +66,7 @@ X = []
 Y = []
 Y2 = []
 for model in index:
-    RMSE = mean_squared_error(result.loc["DFT"], result.loc[model], squared=False)
+    RMSE = root_mean_squared_error(result.loc["DFT"], result.loc[model])
     MAE = mean_absolute_error(result.loc["DFT"], result.loc[model])
     print(model, RMSE, MAE)
     #result.loc["DFT"] - result.loc[model]

@@ -426,7 +426,7 @@ class pKa:
         #self.input_structures[idx][state].write(trajfile, append=False)
         
         
-        opt = BFGS(self.input_structures[idx][state], maxstep=0.035)
+        opt = BFGS(self.input_structures[idx][state], maxstep=0.001)
         opt.initialize()
         
         Y = [self.input_structures[idx][state].get_potential_energy() * 23.06035]
@@ -436,11 +436,13 @@ class pKa:
             Forces = -self.get_forces(idx, state)
             Fmax.append(np.abs(Forces).max())
             opt.step(f=Forces)
-            #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=True)
+            self.input_structures[idx][state].write(f"{self.work_folder}/Debug_{idx}_{state}.xyz", append=True)
             Y.append(self.input_structures[idx][state].get_potential_energy() * 23.06035)
         self.o = opt
         
         return np.array(Y), np.array(Fmax)
+    
+    
         sys.exit()
         Y = [self.input_structures[idx][state].get_potential_energy()* 23.06035]
         Fmax = []
@@ -623,6 +625,8 @@ class pKa:
     def __init__(self):
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
         self.pKas = pandas.read_csv(os.path.join(os.path.dirname(__file__), "DFT_Data_pKa.csv"), index_col=0)
+        #for idx in self.pKas.index:
+            #self.pKas.at[idx, "pKa"] = ((self.pKas.at[idx, "deprot_aq"]*627.5095) - ((self.pKas.at[idx, "prot_aq"]*627.5095) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
         self.radii = pandas.read_csv(os.path.join(os.path.dirname(__file__), "Alvarez2013_vdwradii.csv"), index_col=0)
 
 
@@ -635,7 +639,7 @@ if __name__ == "__main__":
     #x.load_models("TrainDNN/models/Alex_9010", "best_L1.pt"); x.work_folder = "Calculations/Alex_noFmax"
     
     #x.load_models("TrainDNN/models/L1", "best.pt"); x.work_folder = "Calculations/Ross_ConjGD_test"
-    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/crest_testing_Es"
+    x.load_models("TrainDNN/models/uncleaned", "best_L1.pt"); x.work_folder = "Calculations/crest_testing_Es_avogadro_0.001"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
@@ -647,8 +651,9 @@ if __name__ == "__main__":
     conformer_numbers = {}
     conformer_numbers['prot_aq'] = {}
     conformer_numbers['deprot_aq'] = {}
-    for idx in [2,7]:
-    #for idx in [1,2,3,4,5,6,7,9,10,11]:
+    # for idx in [2]:
+    for idx in [1,2,3,4,5,6,7,9,10,11]:
+    # for idx in [1]:
         pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
 # =============================================================================
 #         if os.path.exists(pkl_opt):
@@ -678,9 +683,9 @@ if __name__ == "__main__":
 #                     indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 5)
 #                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
 # =============================================================================
-                if os.path.exists(f"crest/{idx}_{state}/crest_conformers.xyz"):
-                    asemol_guesses = read(f"crest/{idx}_{state}/crest_conformers.xyz", index=':')
-                    print('Crest Generated conformers loaded')
+                if os.path.exists(f"crest_avogadro_level/{idx}_{state}/crest_conformers.xyz"):
+                    asemol_guesses = read(f"crest_avogadro_level/{idx}_{state}/crest_conformers.xyz", index=':')
+                    print('Crest Generated Conformers Loaded')
                     
                 indices = []
                 count = 0
@@ -763,8 +768,7 @@ if __name__ == "__main__":
                     #Y, Fmax = x.Min_conjugateGD(idx, state, Plot=False, traj_ext=f"_{i}", reload_fmax=True)
                     optimization[state][i] = {"G": Y,
                                               "Fmax": Fmax,
-                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035 / 627.5095
-                                               }
+                                              "Final": x.input_structures[idx][state].get_potential_energy()* 23.06035 / 627.5095}
 
  
             with open(pkl_opt, 'wb') as f:
@@ -828,6 +832,7 @@ if __name__ == "__main__":
     plt.xlabel("Predicted $pK_a$")
     plt.legend()
     plt.plot([21, 35], [21, 35], lw=1, color="black")
+    plt.savefig(f"{x.work_folder}/Predictions_Fig.png")
     print("DFT RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Target"]))
     print("Yates RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Yates"]))
     print("DFT MAE:", mean_absolute_error(predictions["Pred"], predictions["Target"]))
