@@ -59,13 +59,16 @@ def load_models(folder, checkpoint="best.pt"):
 def load_yates(mol_indices):
     yates_mols = {}
     for mol_index in mol_indices:
-        dft_folder = "DFT/"
+        dft_folder_aq_prot = "Complete_DFT_Outs\\Aq_Z=1"
+        dft_folder_aq_deprot = "Complete_DFT_Outs\\Aq_Z=0"
+        dft_folder_gas_prot = "Complete_DFT_Outs\\GasZ=1"
+        dft_folder_gas_deprot = "Complete_DFT_Outs\\GasZ=0"
         
         yates_mols[mol_index] = {}
-        yates_mols[mol_index]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}.out"))}
-        yates_mols[mol_index]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}+.out"))}
-        yates_mols[mol_index]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}_gasSP.out"))}
-        yates_mols[mol_index]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{mol_index}+_gasSP.out"))}
+        yates_mols[mol_index]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder_aq_deprot, f"{mol_index}_deprot.out"))}
+        yates_mols[mol_index]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder_aq_prot, f"{mol_index}_prot.out"))}
+        yates_mols[mol_index]["deprot_gas"] = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder_gas_deprot, f"{mol_index}_deprot.out"))}
+        yates_mols[mol_index]["prot_gas"]   = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder_gas_prot, f"{mol_index}_prot.out"))}
         
         for state in yates_mols[mol_index]:
             yates_mols[mol_index][state]["orca_parse"].parse_coords()
