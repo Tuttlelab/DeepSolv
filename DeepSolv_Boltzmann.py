@@ -23,6 +23,8 @@ from _DNN import *
 from scipy.special import logsumexp
 from itertools import combinations
 
+from ase.optimize import GPMin, MDMin, FIRE
+
 
 class MyWarning(DeprecationWarning):
     pass
@@ -152,11 +154,6 @@ class pKa:
                     self.input_structures[mol_index][state].calc = self.Gmodels[state].SUPERCALC
                 except KeyError:
                     warnings.warn("Failed to set Gmodels["+state+"]", MyWarning)
-        
-    def get_rmsd(self, idx: int, state: str):
-        assert self.yates_mols[idx][state]["ase"].get_chemical_symbols() == self.input_structures[idx][state].get_chemical_symbols(), "Cant measure RMSD if the atom order isnt the same"
-        return orca_parser.calc_rmsd(self.yates_mols[idx][state]["ase"].positions,
-                                     self.input_structures[idx][state].positions)
 
     def calc_pKa_full_cycle(self, idx):
         # Get the predictions, also does EnsembleEnergy
@@ -207,51 +204,6 @@ class pKa:
                     xyzout.write(str(c.get_rgb()[0])+"\t"+str(c.get_rgb()[1])+"\t"+str(c.get_rgb()[2]))
                     xyzout.write("\t"+str(Transparency))
                     xyzout.write("\n")
-
-    def find_connections(self, idx, state):
-        # Determine the things we are going to vary
-        mol = self.input_structures[idx][state].copy()
-        if os.path.exists(f"{self.work_folder}/{idx}_{state}_Connections.json"):
-            with open(f"{self.work_folder}/{idx}_{state}_Connections.json") as jin:
-                Connections = json.load(jin)
-        else:
-            Connections = {}
-            for i in range(len(mol)):
-                d = mol.get_distances(i, indices=np.arange(0, len(mol)))
-                for j in np.where((d > 0.01) & (d < 1.8))[0].tolist():
-                    cutoff = bond_cutoffs.at[mol[i].symbol, mol[j].symbol]
-                    if d[j] > cutoff:
-                        continue
-                    key = f"{i}-{j}"
-                    max_dist = (self.radii.at[mol[i].symbol, "vdw_radius"]+self.radii.at[mol[j].symbol, "vdw_radius"]) / 2
-                    min_dist = max_dist/1.75
-                    Connections[key] = {"Type":"Bond", "a0": i, "a1": j,
-                                  "s0": mol[i].symbol, "s1": mol[j].symbol,
-                                  "val": float(d[j]), "Min": min_dist, "Max": max_dist,
-                                  "fineness": 50}
-            for triplet in itertools.permutations(np.arange(len(mol)).tolist(), 3):
-                i,j,k = triplet
-                if mol.get_distance(i, j) > 1.8 or mol.get_distance(j, k) > 1.8:# or mol.get_distance(j, k) > 3.0:
-                    continue
-                key=f"{i}-{j}-{k}"
-                angle = float(mol.get_angle(*triplet))
-                Connections[key] = {"Type":"Angle", "a0": i, "a1": j, "a2": k,
-                               "s0": mol[i].symbol, "s1": mol[j].symbol, "s2": mol[k].symbol,
-                               "val": angle, "Min": angle-20, "Max": angle+20,
-                               "fineness": 100}
-            for quadruplet in itertools.permutations(np.arange(len(mol)).tolist(), 4):
-                i,j,k,l = quadruplet
-                if mol.get_distance(i, j) > 1.8 or mol.get_distance(j, k) > 1.8 or mol.get_distance(k,l) > 1.8:
-                    continue
-                key=f"{i}-{j}-{k}-{l}"
-                dihedral = float(mol.get_dihedral(*quadruplet))
-                Connections[key] = {"Type":"Dihedral", "a0": i, "a1": j, "a2": k, "a3": l,
-                               "s0": mol[i].symbol, "s1": mol[j].symbol, "s2": mol[k].symbol, "s3": mol[l].symbol,
-                               "val": dihedral, "Min": dihedral-40, "Max": dihedral+40,
-                               "fineness": 100}
-            with open(f"{self.work_folder}/{idx}_{state}_Connections.json", 'w') as jout:
-                json.dump(Connections, jout, indent=4)
-        return Connections
     
     def get_forces(self, idx: int, state: str, drs: list = None):
         natoms = self.input_structures[idx][state].positions.shape[0]
@@ -299,544 +251,267 @@ class pKa:
             reload_fmax=True, reload_gmin=False,
             Plot=True, traj_ext="", numsteps=100):
         print("Optimizing:", idx, state)
-        #maxstep = 0.055
-        #trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
+        maxstep = 0.055
+        trajfile = f"{self.work_folder}/Min_{idx}_{state}{traj_ext}.xyz"
         self.input_structures[idx][state].positions -= self.input_structures[idx][state].positions.min(axis=0)
-        #self.input_structures[idx][state].write(trajfile, append=False)
         
-        
-        opt = BFGS(self.input_structures[idx][state], maxstep=0.0001)
-        opt.initialize()
+        opt = FIRE(self.input_structures[idx][state])
+        opt.run()
         
         Y = [self.input_structures[idx][state].get_potential_energy() * 23.06035]
-        Fmax = []
-        #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=False)
-        for i in tqdm.tqdm(range(numsteps)):
-            Forces = -self.get_forces(idx, state)
-            Fmax.append(np.abs(Forces).max())
-            opt.step(f=Forces)
-            #self.input_structures[idx][state].write(f"{self.work_folder}/Debug.xyz", append=True)
-            Y.append(self.input_structures[idx][state].get_potential_energy() * 23.06035)
-        self.o = opt
+        Fmax = [self.get_forces(idx, state)]
         
-        return np.array(Y), np.array(Fmax)    
-
-    def generate_confs(self, idx, state):
-        Connections = self.find_connections(idx, state)
-        asemol = self.yates_mols[idx][state]["ase"].copy()
-        atom_symbols = asemol.get_chemical_symbols()
-        premol = Chem.RWMol()
-        # Add atoms to the molecule
-        for symbol, [xpos, ypos, zpos] in zip(atom_symbols, asemol.positions):
-            atom = Chem.Atom(symbol)
-            atom.SetDoubleProp("x", xpos)
-            atom.SetDoubleProp("y", ypos)
-            atom.SetDoubleProp("z", zpos)
-            premol.AddAtom(atom)
-        
-        for connection in Connections.values():
-            if connection["Type"] != "Bond":
-                continue
-            bond = Chem.BondType.SINGLE
-            if connection["a0"] > connection["a1"]: # cant add the same one twice backwards
-                continue
-            if connection["s0"] == connection["s1"] == "C": # C=C
-                # Check if it is aromatic
-                possible_angles = [angle for angle in Connections.values() if angle["Type"] == "Angle" and angle["a0"] == connection["a0"] and angle["a1"] == connection["a1"]]
-                CCC_angles = [angle for angle in possible_angles if angle["s0"] == angle["s1"] == angle["s2"] =="C"]
-                if len(CCC_angles) > 0:
-                    angles = np.array([angle["val"] for angle in CCC_angles])
-                    if (abs((angles-120)) < 5).any():
-                        bond = Chem.BondType.AROMATIC
-                if bond != Chem.BondType.AROMATIC:
-                    if connection["val"] < 1.44:
-                        bond = Chem.BondType.DOUBLE
-                    else:
-                        bond = Chem.BondType.SINGLE    
-            else:
-                bond = Chem.BondType.SINGLE
-            premol.AddBond(connection["a0"], connection["a1"], bond)
-            print("Bonding:", connection["a0"], connection["a1"], connection["s0"], connection["s1"], bond)
-        mol =  premol.GetMol()
-        rdDepictor.Compute2DCoords(mol)
-        
-        print("Generating initial guesses")
-        clearConfs = True
-        NumConfs = 0
-        pruneRmsThresh = 1.0
-        with tqdm.tqdm(total = 1000) as pbar:
-            while NumConfs < 1000:
-                cids = AllChem.EmbedMultipleConfs(mol, # This doesnt include hydrogens in the RMS calculation!!
-                                                  clearConfs=clearConfs,
-                                                  numConfs=20, 
-                                                  useBasicKnowledge = clearConfs,
-                                                  maxAttempts=10000,
-                                                  forceTol=0.01,
-                                                  pruneRmsThresh = pruneRmsThresh)
-                clearConfs = False
-                pbar.update(mol.GetNumConformers() - NumConfs)
-                NumConfs = mol.GetNumConformers()
-                pruneRmsThresh *= 0.95
-        asemol_guesses = []
-        for i in range(mol.GetNumConformers()):
-            asemol_guesses.append(Atoms(atom_symbols, mol.GetConformer(i).GetPositions()))
-            if i > 0:
-                minimize_rotation_and_translation(asemol_guesses[0], asemol_guesses[i])
-                asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=True)
-            else:
-                asemol_guesses[0].write(f"{self.work_folder}/{idx}_{state}_inputs_all.xyz", append=False)
-        return asemol_guesses
+        return np.array(Y), np.array(Fmax)
     
     def boltzmann_dist(self, energies): # energies in kcal/mol
     
+        energies_normalized = energies - np.min(energies) # Normalize relative to the lowest energy
         beta = 1 / (298.15 * 1.987204259e-3)  # Boltzmann constant in kcal/mol K
-        # Calculate the Boltzmann factors
-        factors = -beta * energies
-        # Use logsumexp to handle the exponentiation more stably
-        log_partition_function = logsumexp(factors)
-        # Calculate the Boltzmann probabilities
-        probabilities = np.exp(factors - log_partition_function)
+        factors = -beta * energies_normalized # Calculate the Boltzmann factors
+        log_partition_function = logsumexp(factors) # Use logsumexp to handle the exponentiation more stably
+        probabilities = np.exp(factors - log_partition_function) # Calculate the Boltzmann probabilities
+        
         return probabilities
+                    
+    def load_filter_confs(self, mol_indices, conformer_path):
+        self.optimization = {}
+        for idx in mol_indices:
+            self.optimization[idx] = {}
+            self.pkl_opt = f"{self.work_folder}/{idx}_optimization.pkl"
+            self.Boltzmann_data[idx] = {}
+
+            if os.path.exists(self.pkl_opt):
+                print("Reloading:", self.pkl_opt)
+                with open(f"{self.work_folder}/{idx}_optimization.pkl", 'rb') as file:
+                    self.optimization[idx] = pickle.load(file)
+            else:
+                for state in ["prot_aq", "deprot_aq"]:
+                    self.optimization[idx][state] = self.process_state(idx, state, conformer_path)
+                with open(f"{self.work_folder}/{idx}_optimization.pkl", 'wb') as file:
+                    pickle.dump(self.optimization, file)
         
-        
-    def filter_confs(self, idx, state, asemol_guesses, keep_n_confs = 10):
-        print("Evaluating initial guesses")
-        x.Gmodels[state].mol = asemol_guesses # Just copy the mols straight in, no need to write and reload from an xyz
-        x.Gmodels[state].MakeTensors()
-        G = x.Gmodels[state].ProcessTensors(units="kcal/mol", return_all=True) # return_all is about all models, not all conformers            
-        # We want conformer guess that not only low energy but also that the ensemble of models are confident in
-        rng = G.max(axis=0)-G.min(axis=0)
-        mean = G.mean(axis=0)
-        # Filter the 1000+ conformer starting points to low energy and high confidence
-        indices = np.argsort(rng)[:keep_n_confs]
-        indices = np.hstack((indices, np.argsort(mean)[:keep_n_confs]))
-        indices = np.unique(indices)
-        for i in range(len(indices)):
-            asemol_guesses[i].write(f"{self.work_folder}/{idx}_{state}_inputs_filtered.xyz", append = (i!=indices[0]))
+
+    def process_state(self, idx, state, conformer_path):
+        state_optimization = {}
+        crest_conformers_path = f"{conformer_path}/{idx}_{state}/crest_conformers.xyz"
+        if os.path.exists(crest_conformers_path):
+            asemol_guesses = read(crest_conformers_path, index=':')
+            confs_kcal, probabilities, highest_prob = self.calculate_probabilities(asemol_guesses, state)
+            indices = self.filter_conformations(confs_kcal, highest_prob)
+
+            for i, asemol_guess in enumerate(asemol_guesses):
+                if i in indices:
+                    state_optimization[i] = self.optimize_conformation(idx, state, i, asemol_guess)
+        return state_optimization
+
+    def calculate_probabilities(self, asemol_guesses, state):
+        confs_kcal = [self.calculate_energy(molecule, state) for molecule in asemol_guesses]
+        probabilities = self.boltzmann_dist(np.array(confs_kcal))
+        highest_prob = np.argmax(probabilities)
+        return confs_kcal, probabilities, highest_prob
+
+    def calculate_energy(self, molecule, state):
+        molecule.calc = self.Gmodels[state].SUPERCALC
+        return molecule.get_potential_energy() * 23.06035
+
+    def filter_conformations(self, confs_kcal, highest_prob):
+        highest_prob_E = confs_kcal[highest_prob]
+        closest = np.where(np.array(confs_kcal) <= highest_prob_E + 5.0)[0]
+        indices = list({highest_prob, *closest})
         return indices
+
+    def optimize_conformation(self, idx, state, i, asemol_guess):
+        self.input_structures[idx][state] = asemol_guess.copy()
+        self.input_structures[idx][state].calc = self.Gmodels[state].SUPERCALC
+        Y, Fmax = self.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
+                           reload_fmax=False, reload_gmin=True, numsteps=100)
+        return {"G": Y, "Fmax": Fmax, "ase": self.input_structures[idx][state].copy(), "conf": i}
+    
+    def plot_optimizations(self, idx):
+        yates = {}
+        for state in ["deprot_aq", "prot_aq"]:
+            x.yates_mols[idx][state]["ase"].calc = x.Gmodels[state].SUPERCALC
+            yates[state] = (x.yates_mols[idx][state]["ase"].get_potential_energy()* 23.06035)
+        #print(optimization)
+        prot_Gs = []
+        deprot_Gs = []
+        for i in self.optimization[idx]["prot_aq"]:
+            G_prot = self.optimization[idx]["prot_aq"][i]["G"].min()
+            plt.plot(self.optimization[idx]["prot_aq"][i]["G"], label=f"prot_{i}")
+            prot_Gs.append(G_prot)
+        plt.plot(np.arange(self.optimization[idx]["prot_aq"][i]["G"].shape[0]), [yates["prot_aq"]]*self.optimization[idx]["prot_aq"][i]["G"].shape[0], label="yates DNN G val")
+        plt.plot(np.arange(self.optimization[idx]["prot_aq"][i]["G"].shape[0]), [x.yates_mols[idx]["prot_aq"]["DFT G"]]*self.optimization[idx]["prot_aq"][i]["G"].shape[0], label="yates DFT G val")
+        plt.legend()
+        plt.title(f"{idx} prot_aq")
+        plt.show()
+        for i in self.optimization[idx]["deprot_aq"]:
+            G_deprot = self.optimization[idx]["deprot_aq"][i]["G"].min()
+            plt.plot(self.optimization[idx]["deprot_aq"][i]["G"], label=f"deprot_{i}")
+            deprot_Gs.append(G_deprot)
+        plt.plot(np.arange(self.optimization[idx]["deprot_aq"][i]["G"].shape[0]), [yates["deprot_aq"]]*self.optimization[idx]["deprot_aq"][i]["G"].shape[0], label="yates DNN G val")
+        plt.plot(np.arange(self.optimization[idx]["deprot_aq"][i]["G"].shape[0]), [x.yates_mols[idx]["deprot_aq"]["DFT G"]]*self.optimization[idx]["deprot_aq"][i]["G"].shape[0], label="yates DFT G val")
+        plt.legend()
+        plt.title(f"{idx} deprot_aq")
+        plt.show()
+    
+    def post_opt_filtering(self, idx, state):
+        energies_kcal = []
+        opt_indices = []
+        self.Boltzmann_data[idx] = {}
+    
+        for i in self.optimization[idx][state]:
+            energies_kcal.append(self.optimization[idx][state][i]['G'].min())
+            opt_indices.append(self.optimization[idx][state][i]['conf'])
+        
+        optimised_probabilities = self.boltzmann_dist(np.array(energies_kcal))
+        most_probable = np.argmax(optimised_probabilities)
+        energy_most_probable = energies_kcal[most_probable]
+        closest = np.where(np.array(energies_kcal) <= energy_most_probable + 3.0)[0]
+        
+        if len(closest) != 1:
+            indices = list(set([most_probable] + closest.tolist()))
+        else:
+            indices = [most_probable]    
+    
+        probable_conformers = {}
+        for struct in indices:
+            probable_conformers[struct] = {
+                "G_kcal": energies_kcal[struct],
+                "ase": self.optimization[idx][state][struct]['ase'],
+                "probability": optimised_probabilities[struct] if state == 'prot_aq' else None,  # Assuming probability only needed for prot_aq
+                "conf": self.optimization[idx][state][struct]['conf']}
+        self.Boltzmann_data[idx][state] = {
+            'Opt_probs': optimised_probabilities,
+            'Opt_confs_kcal': energies_kcal,
+            'Opt_Rel_E': energies_kcal - np.min(energies_kcal),
+            'Opt_Cut': [x for x in range(len(optimised_probabilities)) if x not in indices]}
+        return probable_conformers
+    
+    def RMSD_probable_conformers(self):
+        keep = {'prot_aq': [], 'deprot_aq': []}
+    
+        for state in ["deprot_aq", "prot_aq"]:
+            if len(probable_conformers[state]) == 1:
+                # Handle the case with only one conformer
+                conformer = probable_conformers[state][0]['conf']
+                final_mol = probable_conformers[state][0]["ase"]
+                final_mol.write(f"{self.work_folder}/FINAL_{idx}_{state}.xyz")
+                continue
+            test_mol = []
+            for i in probable_conformers[state]:
+                # Assuming confs is defined earlier in your code
+                confs = deprot_indices if state == "deprot_aq" else prot_indices
+                if probable_conformers[state][i]['conf'] not in confs:
+                    continue
+                mol = probable_conformers[state][i]['ase']
+                mol.calc = self.Gmodels[state].SUPERCALC
+                mol.write(f"{self.work_folder}/FINAL_{idx}_{state}_{confs[i]}.xyz")
+                test_mol.append((mol, probable_conformers[state][i]['G_kcal']))
+            for (mol_1, kcal_1), (mol_2, kcal_2) in combinations(test_mol, 2):
+                rmsd = orca_parser.calc_rmsd(mol_1.positions, mol_2.positions)
+                # Determine which molecule to keep based on RMSD and energy
+                better_mol_energy = kcal_1 if kcal_1 < kcal_2 else kcal_2
+                if rmsd < 0.1:
+                    # Remove the higher energy molecule if it's already in the list
+                    if better_mol_energy not in keep[state]:
+                        keep[state].append(better_mol_energy)
+                else:
+                    # Add both molecules if they are sufficiently different
+                    if kcal_1 not in keep[state]:
+                        keep[state].append(kcal_1)
+                    if kcal_2 not in keep[state]:
+                        keep[state].append(kcal_2)
+        return keep
+    
+    def write_final_conformers(self, state, probable_conformers):
+        for conf in probable_conformers[state]:
+            mol = probable_conformers[state][conf]
+            mol.write(f"{self.work_folder}/FINAL_{idx}_{state}.xyz")
+    
+    def calculate_pka(self, G_deprot, G_prot, idx):
+        ln_log_conversion = 2.303 # ln(10) / log(10) = N //// ln(10) = log(10)*N //// 2.303 = 1*N //// N = 2.303
+        R = 0.0019872036 # Gas constant in kcal / K / mol
+        T = 298.15 # Temperature in K
+        guess_pka = ((G_deprot - (G_prot - self.G_H - self.dG_solv_H)) / (ln_log_conversion * R * T))
+        return guess_pka
+    
+    def calculate_weighted_pka(self, probable_conformers, idx):
+        if len(probable_conformers['prot_aq']) == 1 and len(probable_conformers['deprot_aq']) == 1:
+            for state in ['prot_aq', 'deprot_aq']:
+                self.write_final_conformers(state, probable_conformers)
+            G_deprot = probable_conformers['deprot_aq'][0]["G_kcal"]
+            G_prot = probable_conformers['prot_aq'][0]["G_kcal"]
+            guess_pka = self.calculate_pka(G_deprot, G_prot, idx)
+            print(f"Final Min: guess_pka: {round(guess_pka, 2)} vs {self.pKas.at[idx, 'pKa']}")
+            self.update_predictions(guess_pka)
+        else:
+            energy_lists = {}
+            boltzmann_weights = {}
+            for state in ["deprot_aq", "prot_aq"]:
+                energy_lists[state] = [conformer['G_kcal'] for conformer in probable_conformers[state].values()]
+                boltzmann_weights[state] = self.boltzmann_dist(energy_lists[state])
+                self.write_final_conformers(state, probable_conformers)
+            pKas_weighting = []
+            for i, G_prot in enumerate(energy_lists['prot_aq']):
+                for j, G_deprot in enumerate(energy_lists['deprot_aq']):
+                    guess_pka = self.calculate_pka(G_deprot, G_prot, idx)
+                    weight = boltzmann_weights['prot_aq'][i] + boltzmann_weights['deprot_aq'][j]
+                    pKas_weighting.append((guess_pka, weight))
+    
+            total_weight = sum(weight for _, weight in pKas_weighting)
+            weighted_guess = sum(guess_pka * weight for guess_pka, weight in pKas_weighting) / total_weight
+            print(f"Final Min: guess_pka: {round(weighted_guess, 2)} vs {self.pKas.at[idx, 'pKa']}")
+            self.update_predictions(weighted_guess)
+            
+    def update_predictions(self, guess_pka):
+        self.predictions.at[idx, "Pred"] = round(guess_pka, 2)
+        self.predictions.at[idx, "Target"] = self.pKas.at[idx, "pKa"]
+        self.predictions.at[idx, "Yates"] = self.pKas.at[idx, "Yates"]
+    
+    def print_results(self):
+        for index in self.predictions.index:
+            plt.text(self.predictions.at[index, "Pred"], self.predictions.at[index,"Target"], str(index))
+        plt.scatter(self.predictions["Pred"], self.predictions["Target"], label="vs DFT")
+        plt.scatter(self.predictions["Pred"], self.predictions["Yates"], label="vs Yates")
+        plt.xlabel("Predicted $pK_a$")
+        plt.legend()
+        plt.plot([21, 35], [21, 35], lw=1, color="black")
+        print("DFT RMSE:", root_mean_squared_error(self.predictions["Pred"], self.predictions["Target"]))
+        print("Yates RMSE:", root_mean_squared_error(self.predictions["Pred"], self.predictions["Yates"]))
+        print("DFT MAE:", mean_absolute_error(self.predictions["Pred"], self.predictions["Target"]))
+        print("Yates MAE:", mean_absolute_error(self.predictions["Pred"], self.predictions["Yates"]))
+        print("DFT r2:", r2_score(self.predictions["Pred"], self.predictions["Target"]))
+        print("Yates r2:", r2_score(self.predictions["Pred"], self.predictions["Yates"]))
         
     def __init__(self):
+        self.G_H = -4.39 # kcal/mol
+        self.dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
         self.pKas = pandas.read_csv(os.path.join(os.path.dirname(__file__), "DFT_Data_pKa.csv"), index_col=0)
-# =============================================================================
-#         for idx in self.pKas.index:
-#             self.pKas.at[idx, "pKa"] = ((self.pKas.at[idx, "deprot_aq"]*627.5095) - ((self.pKas.at[idx, "prot_aq"]*627.5095) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-#             print(idx, self.pKas.at[idx, "pKa"])
-# =============================================================================
         self.radii = pandas.read_csv(os.path.join(os.path.dirname(__file__), "Alvarez2013_vdwradii.csv"), index_col=0)
         self.PM7 = pandas.read_csv(os.path.join(os.path.dirname(__file__), "PM7_Data_pKa.csv"), index_col=0)
-
+        self.Boltzmann_data = {}
+        self.predictions = pandas.DataFrame()
 
 if __name__ == "__main__":
-    G_H = -4.39 # kcal/mol
-    dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
+    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/models/uncleaned/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_crest_avo_duplicate_test_3"
+    x.load_models("TrainDNN/models/uncleaned/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_normalized_FIRE"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
     x.load_PM7()
-    # sys.exit()
-    
 
-    predictions = pandas.DataFrame()
+        
+    x.load_filter_confs([1,2,3,4,5,6,7,8,9,10,11], "Crest_Avogadro_Confs/")
+
     for idx in [1,2,3,4,5,6,7,8,9,10,11]:
-    #for idx in [7]:
-        pkl_opt = f"{x.work_folder}/{idx}_optimization.pkl"
-        if os.path.exists(pkl_opt):
-            print("Reloading:", pkl_opt)
-            optimization = pickle.load(open(pkl_opt, 'rb'))
-        else:
-            optimization = {}
-            for state in ["prot_aq", "deprot_aq"]:
-                optimization[state] = {}
-                
-                if os.path.exists(f"crest_avo_duplicate_check/{idx}_{state}/crest_conformers.xyz"):
-                    asemol_guesses = read(f"crest_avo_duplicate_check/{idx}_{state}/crest_conformers.xyz", index=':')
-                    
-                confs_kcal = []
-                for j in asemol_guesses:
-                    j.calc = x.Gmodels[state].SUPERCALC
-
-                    confs_kcal.append(j.get_potential_energy() * 23.06035)
-                    
-                #boltzmann_dist = x.boltzmann_dist(confs_eV)
-                probabilities = x.boltzmann_dist(np.array(confs_kcal)) # get boltzmann
-                highest_prob = np.argmax(probabilities) # get highest prob conf
-                highest_prob_E = confs_kcal[highest_prob] # E of highest prob conf
-                # return confs within 5.0 kcal/mol of highest prob conf (this can be cut to 3.5)
-                closest = np.where((np.array(confs_kcal) >= highest_prob_E - 3.50) & (np.array(confs_kcal) <= highest_prob_E + 3.50))[0]
-                
-                indices = [highest_prob] + closest.tolist()
-                indices = list(set(indices)) # Don't want any repeats
-                
-                #indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 15)
-                
-                # Optimize the filtered confs
-                for i in range(len(indices)):
-                    x.input_structures[idx][state] = asemol_guesses[i].copy()
-                    x.input_structures[idx][state].calc = x.Gmodels[state].SUPERCALC
-                    Y, Fmax = x.Min(idx, state, Plot=True, traj_ext=f"_{i}", 
-                                    reload_fmax=False, reload_gmin=True, numsteps=100)
-                    optimization[state][i] = {"G": Y,
-                                              "Fmax": Fmax,
-                                              "ase": x.input_structures[idx][state].copy(),
-                                              "conf": i}
-
-                
-            with open(pkl_opt, 'wb') as f:
-                pickle.dump(optimization, f)
-        
-        #sys.exit()
-        yates = {}
-        for state in ["deprot_aq", "prot_aq"]:
-            x.yates_mols[idx][state]["ase"].calc = x.Gmodels[state].SUPERCALC
-            yates[state] = (x.yates_mols[idx][state]["ase"].get_potential_energy()* 23.06035)
-        
-        #print(optimization)
-        prot_Gs = []
-        deprot_Gs = []
-        for i in optimization["prot_aq"]:
-            #G_prot = optimization["prot_aq"][i]["Final"]
-            G_prot = optimization["prot_aq"][i]["G"].min()
-            plt.plot(optimization["prot_aq"][i]["G"], label=f"prot_{i}")
-            prot_Gs.append(G_prot)
-        plt.plot(np.arange(optimization["prot_aq"][i]["G"].shape[0]), [yates["prot_aq"]]*optimization["prot_aq"][i]["G"].shape[0], label="yates DNN G val")
-        plt.plot(np.arange(optimization["prot_aq"][i]["G"].shape[0]), [x.yates_mols[idx]["prot_aq"]["DFT G"]]*optimization["prot_aq"][i]["G"].shape[0], label="yates DFT G val")
-        plt.legend()
-        plt.title(f"{idx} prot_aq")
-        plt.show()
-        for i in optimization["deprot_aq"]:
-            #G_deprot = optimization["deprot_aq"][i]["Final"]
-            G_deprot = optimization["deprot_aq"][i]["G"].min()
-            plt.plot(optimization["deprot_aq"][i]["G"], label=f"deprot_{i}")
-            
-            deprot_Gs.append(G_deprot)
-        plt.plot(np.arange(optimization["deprot_aq"][i]["G"].shape[0]), [yates["deprot_aq"]]*optimization["deprot_aq"][i]["G"].shape[0], label="yates DNN G val")
-        plt.plot(np.arange(optimization["deprot_aq"][i]["G"].shape[0]), [x.yates_mols[idx]["deprot_aq"]["DFT G"]]*optimization["deprot_aq"][i]["G"].shape[0], label="yates DFT G val")
-        plt.legend()
-        plt.title(f"{idx} deprot_aq")
-        plt.show()
-        
-        del(prot_Gs)
-        del(deprot_Gs)
-        
-        #print(optimization)
-        
-        # this is where the code gets messy. Lists galore
-        prot_energies_kcal = []
-        deprot_energies_kcal = []
-        opt_indices_prot = [] 
-        opt_indices_deprot = []
-        #set up dictionary to record what we need
-        probable_conformers = {}
-        probable_conformers['prot_aq'] = {}
-        probable_conformers['deprot_aq'] = {}
-        
+        probable_conformers = {'prot_aq': {}, 'deprot_aq': {}}
         for state in ['prot_aq', 'deprot_aq']:
-            if state == 'prot_aq':
-                for i in optimization[state]:
-                    prot_energies_kcal.append(optimization[state][i]['G'].min())
-                    opt_indices_prot.append(optimization[state][i]['conf'])
-                optimised_probabilities = x.boltzmann_dist(np.array(prot_energies_kcal))
-                most_probable_prot = np.argmax(optimised_probabilities)
-                energy_most_probable = prot_energies_kcal[most_probable_prot]
-                closest = np.where((np.array(prot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(prot_energies_kcal) <= energy_most_probable + 1.0))[0]
-                if len(closest) != 1:
-                    prot_indices = list(set([most_probable_prot] + closest.tolist()))
-                else:
-                    prot_indices = [most_probable_prot]
-                
-                if len(prot_indices) == 1:
-                    probable_conformers['prot_aq'][0] = {"G_kcal": prot_energies_kcal[prot_indices[0]],
-                                              "ase": optimization['prot_aq'][prot_indices[0]]['ase'],
-                                              "probability": optimised_probabilities[prot_indices[0]],
-                                               "conf": optimization['prot_aq'][prot_indices[0]]['conf']} # get number of original conf to track the xyz file
-                else:
-                    for struct in range(len(prot_indices)):
-                        probable_conformers['prot_aq'][struct] = {"G_kcal": prot_energies_kcal[prot_indices[struct]],
-                                                  "ase": optimization['prot_aq'][prot_indices[struct]]['ase'],
-                                                  "probability": optimised_probabilities[prot_indices[struct]],
-                                                   "conf": optimization['prot_aq'][prot_indices[struct]]['conf']}
-        
-            elif state == 'deprot_aq':
-                for i in optimization[state]:
-                    deprot_energies_kcal.append(optimization[state][i]['G'].min())
-                    opt_indices_deprot.append(optimization[state][i]['conf'])
-                optimised_probabilities = x.boltzmann_dist(np.array(deprot_energies_kcal))
-                most_probable_deprot = np.argmax(optimised_probabilities)
-                energy_most_probable = deprot_energies_kcal[most_probable_deprot]
-                closest = np.where((np.array(deprot_energies_kcal) >= energy_most_probable - 1.0) & (np.array(deprot_energies_kcal) <= energy_most_probable + 1.0))[0]
-                if len(closest) != 1:
-                    deprot_indices = list(set([most_probable_deprot] + closest.tolist()))
-                else:
-                    deprot_indices = [most_probable_deprot]    
-                
-                if len(deprot_indices) == 1:
-                    probable_conformers['deprot_aq'][0] = {"G_kcal": deprot_energies_kcal[deprot_indices[0]],
-                                              "ase": optimization['deprot_aq'][deprot_indices[0]]['ase'],
-                                               "conf": optimization['deprot_aq'][deprot_indices[0]]['conf']
-                                               }
-                else:
-                    for struct in range(len(deprot_indices)):
-                        probable_conformers['deprot_aq'][struct] = {"G_kcal": deprot_energies_kcal[deprot_indices[struct]],
-                                                  "ase": optimization['deprot_aq'][deprot_indices[struct]]['ase'],
-                                                   "conf": optimization['deprot_aq'][deprot_indices[struct]]['conf']}    
-    
-    
-# =============================================================================
-#          Option 1: Only one possible structure for each prot and deprot
-# =============================================================================
-    
-        if len(probable_conformers['prot_aq']) == 1 and len(probable_conformers['deprot_aq']) == 1:
-            # write out final confs
-            for state in ["deprot_aq", "prot_aq"]:
-                if state == "deprot_aq":    
-                    conformer = probable_conformers['deprot_aq'][0]['conf']
-                else:
-                    conformer = probable_conformers['prot_aq'][0]['conf']
-                final_mol = probable_conformers[state][0]["ase"]
-                final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
+            probable_conformers[state] = x.post_opt_filtering(idx, state)
             
-            #Normal pKa calc from here
-            G_deprot = probable_conformers['deprot_aq'][0]["G_kcal"]
-            G_prot = probable_conformers['prot_aq'][0]["G_kcal"]
-            guess_pka = ((G_deprot) - ((G_prot) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-            print("Final Min: guess_pka:", round(guess_pka,2), "vs", x.pKas.at[idx, "pKa"])
-            predictions.at[idx, "Pred"] = round(guess_pka,2)
-            predictions.at[idx, "Target"] = x.pKas.at[idx, "pKa"] #((yates["deprot_aq"]) - ((yates["prot_aq"]) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-            predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
-            
-        if len(probable_conformers['prot_aq']) != 1 or len(probable_conformers['deprot_aq']) != 1:
-            
-            """
-            - Order of steps for rationalising
-            - Test RMSD
-            - if RMSD < 0.1A, keep lowest energy discard rest
-            - if RMSD > 0.1A, keep structure
-            - Take energies of those remaining, calculate boltzmann and pKa
-            - Weight pKa by probability of each structure
-            """
-                    
-                    
-            # Test RMSD
-            keep_prot = []
-            keep_deprot = []
-            for state in ["deprot_aq", "prot_aq"]:
-                
-                if len(probable_conformers[state]) == 1:
-                    if state == "deprot_aq":    
-                        conformer = probable_conformers['deprot_aq'][0]['conf']
-                    else:
-                        conformer = probable_conformers['prot_aq'][0]['conf']
-                    final_mol = probable_conformers[state][0]["ase"]
-                    final_mol.write(f"{x.work_folder}/FINAL_{idx}_{state}.xyz")
-                    continue
-                
-                
-                test_mol = []
-                for i in probable_conformers[state]:
-                        if state == "deprot_aq":
-                            confs = deprot_indices
-                        else:
-                            confs = prot_indices
-                        if probable_conformers[state][i]['conf'] not in confs:
-                            continue
-                        mol = probable_conformers[state][i]['ase']
-                        mol.calc = x.Gmodels[state].SUPERCALC
-                        mol.write(f"{x.work_folder}/FINAL_{idx}_{state}_{confs[i]}.xyz")
-                        test_mol.append((mol, probable_conformers[state][i]['G_kcal']))
-                        
-                for mol_1, mol_2 in combinations(test_mol, 2):
-                    rmsd = orca_parser.calc_rmsd(mol_1[0].positions, mol_2[0].positions)
-                    #print(rmsd)
-                    if rmsd < 0.1:
-                        if mol_1[1] < mol_2[1]:
-                            if state == 'deprot_aq':
-                                if mol_2[1] in keep_deprot:
-                                    keep_deprot.remove(mol_2[1])
-                                keep_deprot.append(mol_1[1])
-                            else:
-                                if mol_2[1] in keep_prot:
-                                    keep_prot.remove(mol_2[1])
-                                keep_prot.append(mol_1[1])
-                        else:
-                            if state == 'deprot_aq':
-                                if mol_1[1] in keep_deprot:
-                                    keep_deprot.remove(mol_1[1])
-                                keep_deprot.append(mol_2[1])
-                            else:
-                                if mol_1[1] in keep_prot:
-                                    keep_prot.remove(mol_1[1])
-                                keep_prot.append(mol_2[1])
-                    else:
-                        if state == 'deprot_aq':
-                            keep_deprot.append(mol_1[1])
-                            keep_deprot.append(mol_2[1])
-                        else:
-                            keep_prot.append(mol_1[1])
-                            keep_prot.append(mol_2[1])
-            
-            if len(probable_conformers['prot_aq']) == 1:
-                #ensure no duplicate structures
-                
-                keep_deprot_energies_kcal = list(set(keep_deprot))
-                
-                boltzmann_deprot = x.boltzmann_dist(np.array(keep_deprot_energies_kcal))
-                
-                pKas_weighting = {}
-                count = 0
-                for j,deprot in enumerate(keep_deprot_energies_kcal):
-                    
-                    G_deprot = deprot
-                    G_prot = probable_conformers['prot_aq'][0]["G_kcal"]
-                    guess_pka = ((G_deprot) - ((G_prot) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-                    pKas_weighting[count] = {}
-                    pKas_weighting[count]['prot'] = 0
-                    pKas_weighting[count]['deprot'] = j
-                    #pKas_weighting[count]['prot_prob'] = boltzmann_prot[i]
-                    pKas_weighting[count]['deprot_prob'] = boltzmann_deprot[j]
-                    pKas_weighting[count]['total_weight'] = boltzmann_deprot[j]
-                    pKas_weighting[count]['guess'] = guess_pka
-                    pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_deprot[j])
-                    count += 1
-                        
-                total_weights = 0
-                weighted_guess = 0
-                for count in pKas_weighting:
-                    total_weights += pKas_weighting[count]['total_weight']
-                    weighted_guess += pKas_weighting[count]['weighted_guess']
-                
-                guess_pka = weighted_guess /total_weights
-                print("Final Min: guess_pka:", round(guess_pka,2), "vs", x.pKas.at[idx, "pKa"])
-                predictions.at[idx, "Pred"] = round(guess_pka,2)
-                predictions.at[idx, "Target"] = x.pKas.at[idx, "pKa"] #((yates["deprot_aq"]) - ((yates["prot_aq"]) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-
-                predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
-                
-            elif len(probable_conformers['deprot_aq']) == 1:
-                #ensure no duplicate structures
-                
-                # Get boltzmann of remaining structures
-                keep_prot_energies_kcal = list(set(keep_prot))
-                
-                boltzmann_prot = x.boltzmann_dist(np.array(keep_prot_energies_kcal))
-                
-                pKas_weighting = {}
-                count = 0
-                for i,prot in enumerate(keep_prot_energies_kcal):
-                    
-                    G_deprot = probable_conformers['deprot_aq'][0]["G_kcal"]
-                    G_prot = prot
-                    guess_pka = ((G_deprot) - ((G_prot) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-                    pKas_weighting[count] = {}
-                    pKas_weighting[count]['prot'] = i
-                    pKas_weighting[count]['deprot'] = 0
-                    pKas_weighting[count]['prot_prob'] = boltzmann_prot[i]
-                    #pKas_weighting[count]['deprot_prob'] = boltzmann_deprot[j]
-                    pKas_weighting[count]['total_weight'] = boltzmann_prot[i]
-                    pKas_weighting[count]['guess'] = guess_pka
-                    pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_prot[i])
-                    count += 1
-                        
-                total_weights = 0
-                weighted_guess = 0
-                for count in pKas_weighting:
-                    total_weights += pKas_weighting[count]['total_weight']
-                    weighted_guess += pKas_weighting[count]['weighted_guess']
-                
-                guess_pka = weighted_guess /total_weights
-                print("Final Min: guess_pka:", round(guess_pka,2), "vs", x.pKas.at[idx, "pKa"])
-                predictions.at[idx, "Pred"] = round(guess_pka,2)
-                predictions.at[idx, "Target"] = x.pKas.at[idx, "pKa"] #((yates["deprot_aq"]) - ((yates["prot_aq"]) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-                predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
-            else:
-                #ensure no duplicate structures
-                keep_prot = list(set(keep_prot))
-                keep_deprot = list(set(keep_deprot))
-                
-                # Get boltzmann of remaining structures
-                keep_prot_energies_kcal = [x for x in keep_prot]
-                keep_deprot_energies_kcal = [x for x in keep_deprot]
-                
-                keep_prot_energies_eV = [(x/23.06035) for x in keep_prot_energies_kcal]
-                keep_deprot_energies_eV = [(x/23.06035) for x in keep_deprot_energies_kcal]
-                
-                boltzmann_prot = x.boltzmann_dist(np.array(keep_prot_energies_eV))
-                boltzmann_deprot = x.boltzmann_dist(np.array(keep_deprot_energies_eV))
-                
-                pKas_weighting = {}
-                count = 0
-                for i,prot in enumerate(keep_prot_energies_kcal):
-                    for j,deprot in enumerate(keep_deprot_energies_kcal):
-                        
-                        G_deprot = deprot
-                        G_prot = prot
-                        guess_pka = ((G_deprot) - ((G_prot) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-                        pKas_weighting[count] = {}
-                        pKas_weighting[count]['prot'] = i
-                        pKas_weighting[count]['deprot'] = j
-                        pKas_weighting[count]['prot_prob'] = boltzmann_prot[i]
-                        pKas_weighting[count]['deprot_prob'] = boltzmann_deprot[j]
-                        pKas_weighting[count]['total_weight'] = boltzmann_prot[i] + boltzmann_deprot[j]
-                        pKas_weighting[count]['guess'] = guess_pka
-                        pKas_weighting[count]['weighted_guess'] = guess_pka * (boltzmann_prot[i] + boltzmann_deprot[j])
-                        count += 1
-                        
-                total_weights = 0
-                weighted_guess = 0
-                for count in pKas_weighting:
-                    total_weights += pKas_weighting[count]['total_weight']
-                    weighted_guess += pKas_weighting[count]['weighted_guess']
-                
-                guess_pka = weighted_guess /total_weights
-                print("Final Min: guess_pka:", round(guess_pka,2), "vs", x.pKas.at[idx, "pKa"])
-                predictions.at[idx, "Pred"] = round(guess_pka,2)
-                predictions.at[idx, "Target"] = x.pKas.at[idx, "pKa"] #((yates["deprot_aq"]) - ((yates["prot_aq"]) - G_H - dG_solv_H))/(2.303*0.0019872036*298.15)
-                predictions.at[idx, "Yates"] = x.pKas.at[idx, "Yates"]
-
-    #sys.exit()            
-# =============================================================================
-#             for label, G in zip(["deprot_aq", "prot_aq"], [G_deprot, G_prot]):
-#                 yatesG = (x.yates_mols[idx][label]["ase"].get_potential_energy()* 23.06035)
-#                 print(idx, label, G - yatesG, end=" ")
-#                 if G > yatesG:
-#                     print("(yates' lower, underoptimized)")
-#                 else:
-#                     print("(yates' higher, overoptimized)")
-#             
-#             
-#             X, Y = [], []
-#             for i in optimization["deprot_aq"]:
-#                 Final = optimization["deprot_aq"][i]["Final"]
-#                 Initial = optimization["deprot_aq"][i]["G"][0]
-#                 X.append(Initial)
-#                 Y.append(Final)
-#                 dY = optimization["deprot_aq"][i]["G"]
-#                 dY -= min(deprot_Gs)
-#                 plt.plot(dY)
-#                 Fmax = optimization["deprot_aq"][i]["Fmax"]
-#                 plt.scatter([np.argmin(Fmax)], [dY[np.argmin(Fmax)]], marker="1", color="red", s=100)
-#             plt.show()
-# =============================================================================
-
-
-    for index in predictions.index:
-        plt.text(predictions.at[index, "Pred"], predictions.at[index,"Target"], str(index))
-    plt.scatter(predictions["Pred"], predictions["Target"], label="vs DFT")
-    plt.scatter(predictions["Pred"], predictions["Yates"], label="vs Yates")
-    plt.xlabel("Predicted $pK_a$")
-    plt.legend()
-    plt.plot([21, 35], [21, 35], lw=1, color="black")
-    print("DFT RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Target"]))
-    print("Yates RMSE:", root_mean_squared_error(predictions["Pred"], predictions["Yates"]))
-    print("DFT MAE:", mean_absolute_error(predictions["Pred"], predictions["Target"]))
-    print("Yates RMSE:", mean_absolute_error(predictions["Pred"], predictions["Yates"]))
-    print("DFT r2:", r2_score(predictions["Pred"], predictions["Target"]))
-    print("Yates r2:", r2_score(predictions["Pred"], predictions["Yates"]))
-    
-
-
+        x.calculate_weighted_pka(probable_conformers, idx)
+    x.print_results()
