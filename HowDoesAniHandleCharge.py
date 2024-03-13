@@ -81,7 +81,7 @@ Charged.GenModel(species_order)
 Charged.load_checkpoint(str(pathlib.Path(p, "Best.pt")), typ="Energy")
 
 #MAXVAL = 0
-MAXVAL = 0.0189589262008667
+MAXVAL = 0.0558013916015625
 
 viz = open("HowDoesAniHandleCharge.xyz", 'w')
 for yates_i in range(1,12):
@@ -120,11 +120,11 @@ for yates_i in range(1,12):
     min_value = -MAXVAL
 # =============================================================================
 #     if Energies["d"].max() > abs(Energies["d"].min()):
-#         max_value = abs(Energies["d"].min())
-#         min_value = Energies["d"].min()
+#         max_value = abs(Energies["d"].max())
+#         min_value = -Energies["d"].max()
 #     else:
-#         max_value = Energies["d"].max()
-#         min_value = -Energies["d"].max()    
+#         max_value = abs(Energies["d"].min())
+#         min_value = Energies["d"].min()    
 #     if max_value > MAXVAL:
 #         MAXVAL = max_value
 # =============================================================================
