@@ -50,9 +50,10 @@ def get_color_gradient(value, min_value, max_value):
 device = torch.device("cpu")
 
 
+state = "Gas"
 
 # Load Neutral model
-p = "TrainDNN/models/uncleaned/Aq_Z=0_bs=2048_alex"
+p = f"TrainDNN/models/uncleaned/{state}_Z=0_bs=2048_alex"
 self_energy = pathlib.Path(p, "Self_Energies.csv")
 training_config = pathlib.Path(p, "training_config.json")
 print("p:", p)
@@ -67,7 +68,7 @@ Neutral.load_checkpoint(str(pathlib.Path(p, "Best.pt")), typ="Energy")
 #Neutral.SwitchCalculator(0)
 
 # Load Charged model
-p = "TrainDNN/models/uncleaned/Aq_Z=1_bs=2048_alex"
+p = f"TrainDNN/models/uncleaned/{state}_Z=1_bs=2048_alex"
 self_energy = pathlib.Path(p, "Self_Energies.csv")
 training_config = pathlib.Path(p, "training_config.json")
 print("p:", p)
@@ -80,8 +81,8 @@ Charged = IrDNN(ChargedSelfE, verbose=False, device=device,training_config=train
 Charged.GenModel(species_order)
 Charged.load_checkpoint(str(pathlib.Path(p, "Best.pt")), typ="Energy")
 
-#MAXVAL = 0
-MAXVAL = 0.0558013916015625
+MAXVAL = 0
+#MAXVAL = 0.0558013916015625
 
 viz = open("HowDoesAniHandleCharge.xyz", 'w')
 for yates_i in range(1,12):
@@ -116,18 +117,18 @@ for yates_i in range(1,12):
     print(Energies)
     plt.scatter(Energies["d"], Energies["Mulliken"])
     # Find the min max scale
-    max_value = MAXVAL
-    min_value = -MAXVAL
 # =============================================================================
-#     if Energies["d"].max() > abs(Energies["d"].min()):
-#         max_value = abs(Energies["d"].max())
-#         min_value = -Energies["d"].max()
-#     else:
-#         max_value = abs(Energies["d"].min())
-#         min_value = Energies["d"].min()    
-#     if max_value > MAXVAL:
-#         MAXVAL = max_value
+#     max_value = MAXVAL
+#     min_value = -MAXVAL
 # =============================================================================
+    if Energies["d"].max() > abs(Energies["d"].min()):
+        max_value = abs(Energies["d"].max())
+        min_value = -Energies["d"].max()
+    else:
+        max_value = abs(Energies["d"].min())
+        min_value = Energies["d"].min()    
+    if max_value > MAXVAL:
+        MAXVAL = max_value
     
     
     viz.write(f"{mol.positions.shape[0]}\n\n")
@@ -143,7 +144,8 @@ for yates_i in range(1,12):
 viz.close()
 
 print("Green = more negative G value")
-print("Red = more positive G value")
+print("blue = more positive G value")
+print("Global maxval:", MAXVAL)
 
 
 
