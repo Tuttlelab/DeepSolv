@@ -9,6 +9,7 @@ import os, pandas, json, orca_parser
 from _DNN import *
 import torch
 from ase import Atoms
+from ase.optimize import LBFGS, BFGS, FIRE
 import ase
 from sklearn.metrics import root_mean_squared_error
 import matplotlib.pyplot as plt
@@ -59,10 +60,10 @@ def load_models(folder, checkpoint="best.pt"):
 def load_yates(mol_indices):
     yates_mols = {}
     for mol_index in mol_indices:
-        dft_folder_aq_prot = "Complete_DFT_Outs\\Aq_Z=1"
-        dft_folder_aq_deprot = "Complete_DFT_Outs\\Aq_Z=0"
-        dft_folder_gas_prot = "Complete_DFT_Outs\\GasZ=1"
-        dft_folder_gas_deprot = "Complete_DFT_Outs\\GasZ=0"
+        dft_folder_aq_prot = "Complete_DFT_Outs/Aq_Z=1"
+        dft_folder_aq_deprot = "Complete_DFT_Outs/Aq_Z=0"
+        dft_folder_gas_prot = "Complete_DFT_Outs/GasZ=1"
+        dft_folder_gas_deprot = "Complete_DFT_Outs/GasZ=0"
         
         yates_mols[mol_index] = {}
         yates_mols[mol_index]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder_aq_deprot, f"{mol_index}_deprot.out"))}
@@ -79,28 +80,42 @@ def load_yates(mol_indices):
             
     return yates_mols
 
+def Opt(asemol, state, models):
+    
+    asemol.calc = models[state].SUPERCALC
+    opt = BFGS(asemol)
+    opt.run(fmax=0.01)
+    Final_E = asemol.get_potential_energy() * 23.06035
+    
+    return Final_E
+    
+
 models_folder = "TrainDNN/models/uncleaned/"
 models = load_models(models_folder)
 
-mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
+mol_indices = [7,8]#[1,2,3,4,5,6,7,8,9,10,11]
 yates_mols = load_yates(mol_indices)
 
 
-carbenes = glob.glob("DFT/*.out")
+carbenes = glob.glob("Complete_DFT_Outs/*Gas*/*.out")
 carbene_mols = {}
 for carbene in carbenes:
-    if 'gasSP' in carbene:
+    if "Aq" in carbene:
         continue
     carbene_name = carbene.split("/")[-1].replace(".out", "")
+    mol_index = carbene_name.split("_")[0]
+    if int(mol_index) not in mol_indices:
+        continue
     carbene_mols[carbene_name] = {}
-    if '+' in carbene_name:
-        state = 'prot_gas'
-        mol_index = carbene_name.split('+')[0]
-    else:
+    
+    if 'deprot' in carbene_name:
         state = 'deprot_gas'
-        mol_index = carbene_name
+    else:
+        state = 'prot_gas'
         
     asemol = yates_mols[int(mol_index)][state]["ase"]
+    
+    #Final_E = Opt(asemol, state, models)
     
     yates_mols[int(mol_index)][state]["ase"].calc = models[state].SUPERCALC
     
@@ -113,18 +128,15 @@ for state in ['prot_gas', 'deprot_gas']:
     G_preds = []
     G_DFTs = []
     for carbene in carbene_mols:
-        if state == 'prot_gas':
-            if "+" not in carbene:
-                continue
         G_pred = carbene_mols[carbene]['G_pred']
         G_preds.append(G_pred)
         G_DFT = carbene_mols[carbene]['DFT']
         G_DFTs.append(G_DFT)
-    rmse = round(root_mean_squared_error(G_DFTs, G_preds), 2)
+    #rmse = round(root_mean_squared_error(G_DFTs, G_preds), 2)
 
-    print(state, "RMSE :", rmse)
+    #print(state, "RMSE :", rmse)
     
-print("7 DFT difference:   ", round(carbene_mols['7']['delta_DFT_value'],4))
-print("7+ DFT difference:  ", round(carbene_mols['7+']['delta_DFT_value'],4))
-print("8 DFT difference:   ", round(carbene_mols['8']['delta_DFT_value'],4))
-print("8+ DFT difference:  ", round(carbene_mols['8+']['delta_DFT_value'],4))
+print("7 DFT difference:   ", round(carbene_mols['7_deprot']['delta_DFT_value'],4))
+print("7+ DFT difference:  ", round(carbene_mols['7_prot']['delta_DFT_value'],4))
+print("8 DFT difference:   ", round(carbene_mols['8_deprot']['delta_DFT_value'],4))
+print("8+ DFT difference:  ", round(carbene_mols['8_prot']['delta_DFT_value'],4))

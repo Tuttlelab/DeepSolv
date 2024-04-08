@@ -683,8 +683,8 @@ if __name__ == "__main__":
 #                     indices = x.filter_confs(idx, state, asemol_guesses, keep_n_confs = 5)
 #                     np.savetxt(x.fname_filtered(idx, state).replace(".xyz", "_indices.txt"), indices)
 # =============================================================================
-                if os.path.exists(f"crest_avogadro_level/{idx}_{state}/crest_conformers.xyz"):
-                    asemol_guesses = read(f"crest_avogadro_level/{idx}_{state}/crest_conformers.xyz", index=':')
+                if os.path.exists(f"Crest_Avogadro_Confs/{idx}_{state}/crest_conformers.xyz"):
+                    asemol_guesses = read(f"Crest_Avogadro_Confs/{idx}_{state}/crest_conformers.xyz", index=':')
                     print('Crest Generated Conformers Loaded')
                     
                 indices = []

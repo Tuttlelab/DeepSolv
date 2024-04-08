@@ -9,7 +9,7 @@ from sklearn.metrics import mean_squared_error, root_mean_squared_error, euclide
 import torch
 import json
 import pandas
-import os, itertools, tqdm, pickle, warnings, sys
+import os, itertools, tqdm, pickle, warnings, sys, glob, time
 import numpy as np
 from colour import Color
 import matplotlib.pyplot as plt
@@ -95,8 +95,6 @@ class pKa:
             print(f"{key} Checkpoint:  {fullpath} loaded successfully")
 
     def load_yates(self):
-        self.G_H = -4.39
-        self.dG_solv_H = -264.61
         self.yates_mols = {}
         self.yates_unopt_pKa = pandas.DataFrame()
         for mol_index in self.mol_indices:
@@ -122,7 +120,7 @@ class pKa:
                 
             deprot_aq_G = self.yates_mols[mol_index]['deprot_aq']['ase'].get_potential_energy()*23.06035
             prot_aq_G = self.yates_mols[mol_index]['prot_aq']['ase'].get_potential_energy()*23.06035
-            guess_pKa = ((deprot_aq_G) - ((prot_aq_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
+            guess_pKa = self.calculate_pka(deprot_aq_G, prot_aq_G)
             self.yates_unopt_pKa.at[mol_index, "DFT_unopt_pKa_pred"] = guess_pKa
             self.yates_unopt_pKa.at[mol_index, "Yates_pKa_lit"] = self.pKas.at[mol_index, "Yates"]
         self.yates_unopt_pKa.at['MSE', "MSE"] = mean_squared_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
@@ -130,20 +128,63 @@ class pKa:
         self.yates_unopt_pKa.at['MAE', "MAE"] = mean_absolute_error(self.yates_unopt_pKa['Yates_pKa_lit'].dropna(), self.yates_unopt_pKa['DFT_unopt_pKa_pred'].dropna())
             
     def load_PM7(self):
-        self.G_H = -4.39
-        self.dG_solv_H = -264.61
         self.PM7_pKa = pandas.DataFrame()
         for mol_index in self.mol_indices:
             prot_G = self.PM7['prot'][mol_index] * 627.5095
             deprot_G = self.PM7['deprot'][mol_index] * 627.5095
             
-            guess_pKa = ((deprot_G) - ((prot_G) - self.G_H - self.dG_solv_H))/(2.303*0.0019872036*298.15)
+            guess_pKa = self.calculate_pka(deprot_G, prot_G)
             self.PM7_pKa.at[mol_index, 'PM7_pKa'] = guess_pKa
             self.PM7_pKa.at[mol_index, 'Yates_pKa_lit'] = self.pKas.at[mol_index, "Yates"]
         self.PM7_pKa.at['MSE', "MSE"] = mean_squared_error(self.PM7_pKa['Yates_pKa_lit'].dropna(), self.PM7_pKa['PM7_pKa'].dropna())
         self.PM7_pKa.at['RMSE', "RMSE"] = root_mean_squared_error(self.PM7_pKa['Yates_pKa_lit'].dropna(), self.PM7_pKa['PM7_pKa'].dropna())
         self.PM7_pKa.at['MAE', "MAE"] = mean_absolute_error(self.PM7_pKa['Yates_pKa_lit'].dropna(), self.PM7_pKa['PM7_pKa'].dropna())    
+        
+    def load_alternate(self, path_to_files):
+        files = glob.glob(path_to_files)
+        
+        self.additional_mols = {}       
+        for file in files:
+            dft_folder = os.path.join(os.path.dirname(__file__), "DFT")
+            filename = file.split("/")[-1].split("_")[0]
+            self.additional_mols[filename] = {}
+            self.additional_mols[filename]["deprot_aq"]  = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{filename}_deprot.out"))}
+            self.additional_mols[filename]["prot_aq"]    = {"orca_parse": orca_parser.ORCAParse(os.path.join(dft_folder, f"{filename}_prot.out"))}
+            
+            for state in ['prot_aq', 'deprot_aq']:
+                self.additional_mols[filename][state]["orca_parse"].parse_coords()
+                self.additional_mols[filename][state]["orca_parse"].parse_free_energy()
+                self.additional_mols[filename][state]["DFT G"] = self.additional_mols[filename][state]["orca_parse"].Gibbs * 627.5
+                self.additional_mols[filename][state]["ase"] = Atoms(self.additional_mols[filename][state]["orca_parse"].atoms, 
+                                                           self.additional_mols[filename][state]["orca_parse"].coords[-1])
+                try:
+                    self.additional_mols[filename][state]["ase"].calc = self.Gmodels[state].SUPERCALC
+                except:
+                    warnings.warn("Couldnt load model for "+state, MyWarning)
+                self.additional_mols[filename][state]["Yates pKa"] = self.additional_pKas.at[1, "Yates"]
+                
+# =============================================================================
+#                 op = orca_parser.ORCAParse(file)
+#                 op.parse_coords()
+#                 op.parse_free_energy()
+#                 DFT_G = op.Gibbs * 627.5095
+#                 mol = Atoms(symbols=op.atoms, positions=op.coords[-1])
+# 
+# 
+#             self.additional_mols[filename][state] = {}
+#             self.additional_mols[filename][state]['orca_parse'] = op
+#             self.additional_mols[filename][state]['ase'] = mol
+#             self.additional_mols[filename][state]['DFT G'] = DFT_G
+#             self.additional_mols[filename][state]["ase"].calc = self.Gmodels[state].SUPERCALC
+# =============================================================================
 
+        for mol in self.additional_mols:
+            deprot_aq_G = self.additional_mols[mol]['deprot_aq']['ase'].get_potential_energy()*23.06035
+            prot_aq_G = self.additional_mols[mol]['prot_aq']['ase'].get_potential_energy()*23.06035
+            guess_pKa = self.calculate_pka(deprot_aq_G, prot_aq_G)
+            self.yates_unopt_pKa.at[12, "DFT_unopt_pKa_pred"] = guess_pKa
+            self.yates_unopt_pKa.at[12, "Yates_pKa_lit"] = self.additional_pKas.at[1, "Yates"]
+        
     def use_yates_structures(self):
         self.input_structures = {}
         for mol_index in self.yates_mols:
@@ -155,36 +196,15 @@ class pKa:
                 except KeyError:
                     warnings.warn("Failed to set Gmodels["+state+"]", MyWarning)
 
-    def calc_pKa_full_cycle(self, idx):
-        # Get the predictions, also does EnsembleEnergy
-        Deprot_aq = self.input_structures[idx]["deprot_aq"].get_potential_energy()*23.06035
-        Deprot_gas = self.input_structures[idx]["deprot_gas"].get_potential_energy()*23.06035
-        Prot_aq = self.input_structures[idx]["prot_aq"].get_potential_energy()*23.06035
-        Prot_gas = self.input_structures[idx]["prot_gas"].get_potential_energy()*23.06035
-        # 2 methods of calculating pKa
-        # Method 1 (traditional, dft-like thermodynamic cycle)
-        dGgas = (Deprot_gas + G_H) - Prot_gas
+    def calc_pKa_full_cycle(self, idx, Deprot_aq, Deprot_gas, Prot_aq, Prot_gas):
+
+        dGgas = (Deprot_gas + self.G_H) - Prot_gas
         dG_solv_A = Deprot_aq - Deprot_gas
         dG_solv_HA = Prot_aq - Prot_gas
-        dG_aq = dGgas + dG_solv_A + dG_solv_H  - dG_solv_HA
+        dG_aq = dGgas + dG_solv_A + self.dG_solv_H  - dG_solv_HA
         pKa_1 = dG_aq/(2.303*0.0019872036*298.15)        
         self.pKas.at[idx, "pKa_pred_1"] = pKa_1
-        return pKa_1
-    
-    def calc_pKa_direct(self, idx):
-        # Get the predictions, also does EnsembleEnergy
-        Deprot_aq = self.input_structures[idx]["deprot_aq"].get_potential_energy()*23.06035
-        Deprot_gas = self.input_structures[idx]["deprot_gas"].get_potential_energy()*23.06035
-        Prot_aq = self.input_structures[idx]["prot_aq"].get_potential_energy()*23.06035
-        Prot_gas = self.input_structures[idx]["prot_gas"].get_potential_energy()*23.06035
-        # 2 methods of calculating pKa
-        # Method 1 (traditional, dft-like thermodynamic cycle)
-        dGgas = (Deprot_gas + G_H) - Prot_gas
-        dG_solv_A = Deprot_aq - Deprot_gas
-        dG_solv_HA = Prot_aq - Prot_gas
-        dG_aq = dGgas + dG_solv_A + dG_solv_H  - dG_solv_HA
-        pKa_1 = dG_aq/(2.303*0.0019872036*298.15)        
-        self.pKas.at[idx, "pKa_pred_1"] = pKa_1
+        
         return pKa_1
 
     def xyzrmsd(self, idx):
@@ -273,7 +293,7 @@ class pKa:
         
         return probabilities
                     
-    def load_filter_confs(self, mol_indices, conformer_path):
+    def load_filter_confs(self, mol_indices, conformer_path, states):
         self.optimization = {}
         for idx in mol_indices:
             self.optimization[idx] = {}
@@ -285,11 +305,10 @@ class pKa:
                 with open(f"{self.work_folder}/{idx}_optimization.pkl", 'rb') as file:
                     self.optimization[idx] = pickle.load(file)
             else:
-                for state in ["prot_aq", "deprot_aq"]:
+                for state in states:
                     self.optimization[idx][state] = self.process_state(idx, state, conformer_path)
                 with open(f"{self.work_folder}/{idx}_optimization.pkl", 'wb') as file:
                     pickle.dump(self.optimization, file)
-        
 
     def process_state(self, idx, state, conformer_path):
         state_optimization = {}
@@ -354,15 +373,18 @@ class pKa:
         plt.title(f"{idx} deprot_aq")
         plt.show()
     
-    def post_opt_filtering(self, idx, state):
+    def post_opt_filtering(self, idx, state, opt=True):
+        
         energies_kcal = []
-        opt_indices = []
         self.Boltzmann_data[idx] = {}
     
-        for i in self.optimization[idx][state]:
-            energies_kcal.append(self.optimization[idx][state][i]['G'].min())
-            opt_indices.append(self.optimization[idx][state][i]['conf'])
-        
+        if opt == True:
+            for i in self.optimization[idx][idx][state]:
+                energies_kcal.append(self.optimization[idx][idx][state][i]['G'].min())
+        elif opt == False:
+            for i in self.crest_conformers[str(idx)][state]:
+                energies_kcal.append(self.crest_conformers[str(idx)][state][i]['DFT G'])
+
         optimised_probabilities = self.boltzmann_dist(np.array(energies_kcal))
         most_probable = np.argmax(optimised_probabilities)
         energy_most_probable = energies_kcal[most_probable]
@@ -374,17 +396,27 @@ class pKa:
             indices = [most_probable]    
     
         probable_conformers = {}
-        for struct in indices:
-            probable_conformers[struct] = {
-                "G_kcal": energies_kcal[struct],
-                "ase": self.optimization[idx][state][struct]['ase'],
-                "probability": optimised_probabilities[struct] if state == 'prot_aq' else None,  # Assuming probability only needed for prot_aq
-                "conf": self.optimization[idx][state][struct]['conf']}
-        self.Boltzmann_data[idx][state] = {
-            'Opt_probs': optimised_probabilities,
-            'Opt_confs_kcal': energies_kcal,
-            'Opt_Rel_E': energies_kcal - np.min(energies_kcal),
-            'Opt_Cut': [x for x in range(len(optimised_probabilities)) if x not in indices]}
+        if opt == True:
+            for struct in indices:
+                probable_conformers[struct] = {
+                    "G_kcal": energies_kcal[struct],
+                    "ase": self.optimization[idx][idx][state][struct]['ase'],
+                    "probability": optimised_probabilities[struct],
+                    "conf": self.optimization[idx][idx][state][struct]['conf']}
+            self.Boltzmann_data[idx][state] = {
+                'Opt_probs': optimised_probabilities,
+                'Opt_confs_kcal': energies_kcal,
+                'Opt_Rel_E': energies_kcal - np.min(energies_kcal),
+                'Opt_Cut': [x for x in range(len(optimised_probabilities)) if x not in indices]}
+        elif opt == False:
+            for struct in indices:
+
+                probable_conformers[struct] = {
+                    "G_kcal": energies_kcal[struct],
+                    "ase": self.crest_conformers[str(idx)][state][struct]['ase'],
+                    "probability": optimised_probabilities[struct],
+                    "conf": self.crest_conformers[str(idx)][state][struct]['conf']}
+
         return probable_conformers
     
     def RMSD_probable_conformers(self):
@@ -428,66 +460,132 @@ class pKa:
             mol = probable_conformers[state][conf]
             mol.write(f"{self.work_folder}/FINAL_{idx}_{state}.xyz")
     
-    def calculate_pka(self, G_deprot, G_prot, idx):
+    def calculate_pka(self, G_deprot, G_prot):
         ln_log_conversion = 2.303 # ln(10) / log(10) = N //// ln(10) = log(10)*N //// 2.303 = 1*N //// N = 2.303
         R = 0.0019872036 # Gas constant in kcal / K / mol
         T = 298.15 # Temperature in K
         guess_pka = ((G_deprot - (G_prot - self.G_H - self.dG_solv_H)) / (ln_log_conversion * R * T))
+        #guess_pka = (((G_deprot + (self.dG_solv_H + self.G_H)) - G_prot) / ln_log_conversion * R * T)
         return guess_pka
     
-    def calculate_weighted_pka(self, probable_conformers, idx):
-        if len(probable_conformers['prot_aq']) == 1 and len(probable_conformers['deprot_aq']) == 1:
-            for state in ['prot_aq', 'deprot_aq']:
-                self.write_final_conformers(state, probable_conformers)
-            G_deprot = probable_conformers['deprot_aq'][0]["G_kcal"]
-            G_prot = probable_conformers['prot_aq'][0]["G_kcal"]
-            guess_pka = self.calculate_pka(G_deprot, G_prot, idx)
-            print(f"Final Min: guess_pka: {round(guess_pka, 2)} vs {self.pKas.at[idx, 'pKa']}")
-            self.update_predictions(guess_pka)
-        else:
-            energy_lists = {}
-            boltzmann_weights = {}
-            for state in ["deprot_aq", "prot_aq"]:
-                energy_lists[state] = [conformer['G_kcal'] for conformer in probable_conformers[state].values()]
-                boltzmann_weights[state] = self.boltzmann_dist(energy_lists[state])
-                self.write_final_conformers(state, probable_conformers)
-            pKas_weighting = []
-            for i, G_prot in enumerate(energy_lists['prot_aq']):
-                for j, G_deprot in enumerate(energy_lists['deprot_aq']):
-                    guess_pka = self.calculate_pka(G_deprot, G_prot, idx)
-                    weight = boltzmann_weights['prot_aq'][i] + boltzmann_weights['deprot_aq'][j]
-                    pKas_weighting.append((guess_pka, weight))
-    
-            total_weight = sum(weight for _, weight in pKas_weighting)
-            weighted_guess = sum(guess_pka * weight for guess_pka, weight in pKas_weighting) / total_weight
-            print(f"Final Min: guess_pka: {round(weighted_guess, 2)} vs {self.pKas.at[idx, 'pKa']}")
-            self.update_predictions(weighted_guess)
+    def calculate_weighted_pka(self, probable_conformers, idx, DFT_crest=False):
+        if len(probable_conformers.keys()) == 2:
+            if len(probable_conformers['prot_aq']) == 1 and len(probable_conformers['deprot_aq']) == 1:
+                G_deprot = probable_conformers['deprot_aq'][0]["G_kcal"]
+                G_prot = probable_conformers['prot_aq'][0]["G_kcal"]
+                guess_pka = self.calculate_pka(G_deprot, G_prot, idx)
+                if not DFT_crest:
+                    print(f"Molecule {idx}: guess_pka: {round(guess_pka, 2)} vs {self.pKas.at[idx, 'pKa']}")
+                self.update_predictions(idx, guess_pka, DFT_crest)
+            else:
+                energy_lists = {}
+                boltzmann_weights = {}
+                for state in ["deprot_aq", "prot_aq"]:
+                    energy_lists[state] = [conformer['G_kcal'] for conformer in probable_conformers[state].values()]
+                    boltzmann_weights[state] = self.boltzmann_dist(energy_lists[state])
+                pKas_weighting = []
+                for i, G_prot in enumerate(energy_lists['prot_aq']):
+                    for j, G_deprot in enumerate(energy_lists['deprot_aq']):
+                        guess_pka = self.calculate_pka(G_deprot, G_prot)
+                        weight = boltzmann_weights['prot_aq'][i] + boltzmann_weights['deprot_aq'][j]
+                        pKas_weighting.append((guess_pka, weight))
+        
+                total_weight = sum(weight for _, weight in pKas_weighting)
+                weighted_guess = sum(guess_pka * weight for guess_pka, weight in pKas_weighting) / total_weight
+                if not DFT_crest:
+                    print(f"Molecule {idx}: guess_pka: {round(weighted_guess, 2)} vs {self.pKas.at[idx, 'pKa']}")
+                self.update_predictions(idx, weighted_guess, DFT_crest)
+        elif len(probable_conformers.keys()) == 4:
+            if len(probable_conformers['prot_aq']) == 1 and len(probable_conformers['deprot_aq']) == 1 and len(probable_conformers['prot_gas']) == 1 and len(probable_conformers['deprot_gas']) == 1:
+                G_deprot_aq = probable_conformers['deprot_aq'][0]["G_kcal"]
+                G_prot_aq = probable_conformers['prot_aq'][0]["G_kcal"]
+                G_deprot_gas = probable_conformers['deprot_gas'][0]["G_kcal"]
+                G_prot_gas = probable_conformers['prot_gas'][0]["G_kcal"]
+                guess_pka = self.calc_pKa_full_cycle(idx, G_deprot_aq, G_deprot_gas, G_prot_aq, G_prot_gas)
+                if not DFT_crest:
+                    print(f"Molecule {idx}: guess_pka: {round(guess_pka, 2)} vs {self.pKas.at[idx, 'pKa']}")
+                self.update_predictions(idx, guess_pka, DFT_crest)
+            else:
+                energy_lists = {}
+                boltzmann_weights = {}
+                for state in ["deprot_aq", "prot_aq", "prot_gas", "deprot_gas"]:
+                    energy_lists[state] = [conformer['G_kcal'] for conformer in probable_conformers[state].values()]
+                    boltzmann_weights[state] = self.boltzmann_dist(energy_lists[state])
+                pKas_weighting = []
+                for i, G_prot_aq in enumerate(energy_lists['prot_aq']):
+                    for j, G_deprot_aq in enumerate(energy_lists['deprot_aq']):
+                        for k, G_prot_gas in enumerate(energy_lists['prot_gas']):
+                            for l, G_deprot_gas in enumerate(energy_lists['deprot_gas']):
+                                guess_pka = self.calc_pKa_full_cycle(idx, G_deprot_aq, G_deprot_gas, G_prot_aq, G_prot_gas)
+                                weight = boltzmann_weights['prot_aq'][i] + boltzmann_weights['deprot_aq'][j] + boltzmann_weights['prot_gas'][k] + boltzmann_weights['deprot_gas'][l]
+                                pKas_weighting.append((guess_pka, weight))
+        
+                total_weight = sum(weight for _, weight in pKas_weighting)
+                weighted_guess = sum(guess_pka * weight for guess_pka, weight in pKas_weighting) / total_weight
+                if not DFT_crest:
+                    print(f"Molecule {idx}: guess_pka: {round(weighted_guess, 2)} vs {self.pKas.at[idx, 'pKa']}")
+                self.update_predictions(idx, weighted_guess, DFT_crest)
             
-    def update_predictions(self, guess_pka):
-        self.predictions.at[idx, "Pred"] = round(guess_pka, 2)
+    def update_predictions(self, idx, guess_pka, DFT_crest=False):
         self.predictions.at[idx, "Target"] = self.pKas.at[idx, "pKa"]
         self.predictions.at[idx, "Yates"] = self.pKas.at[idx, "Yates"]
+        if DFT_crest:
+            self.predictions.at[idx, "DFT_Boltzmann_Pred"] = round(guess_pka, 2)
+        if not DFT_crest:
+            self.predictions.at[idx, "Pred"] = round(guess_pka, 2)
     
     def print_results(self):
         for index in self.predictions.index:
             plt.text(self.predictions.at[index, "Pred"], self.predictions.at[index,"Target"], str(index))
-        plt.scatter(self.predictions["Pred"], self.predictions["Target"], label="vs DFT")
-        plt.scatter(self.predictions["Pred"], self.predictions["Yates"], label="vs Yates")
+        plt.scatter(self.predictions["Pred"], self.predictions["Yates"], label="vs Yates GM")
+        plt.scatter(self.predictions["Pred"], self.predictions["Target"], label="vs DFT GM")
+        plt.scatter(self.predictions["Pred"], self.predictions["DFT_Boltzmann_Pred"], label="vs DFT Ensemble")
         plt.xlabel("Predicted $pK_a$")
+        plt.ylabel("Reference $pK_a$")
         plt.legend()
         plt.plot([21, 35], [21, 35], lw=1, color="black")
-        print("DFT RMSE:", root_mean_squared_error(self.predictions["Pred"], self.predictions["Target"]))
-        print("Yates RMSE:", root_mean_squared_error(self.predictions["Pred"], self.predictions["Yates"]))
-        print("DFT MAE:", mean_absolute_error(self.predictions["Pred"], self.predictions["Target"]))
-        print("Yates MAE:", mean_absolute_error(self.predictions["Pred"], self.predictions["Yates"]))
-        print("DFT r2:", r2_score(self.predictions["Pred"], self.predictions["Target"]))
-        print("Yates r2:", r2_score(self.predictions["Pred"], self.predictions["Yates"]))
+        print("DFT RMSE:", round(root_mean_squared_error(self.predictions["Pred"], self.predictions["Target"]),2))
+        print("DFT Boltzmann RMSE:", round(root_mean_squared_error(self.predictions["Pred"], self.predictions["DFT_Boltzmann_Pred"]),2))
+        print("Yates RMSE:", round(root_mean_squared_error(self.predictions["Pred"], self.predictions["Yates"]),2))
+        print("DFT MAE:", round(mean_absolute_error(self.predictions["Pred"], self.predictions["Target"]),2))
+        print("DFT Boltzmann MAE:", round(mean_absolute_error(self.predictions["Pred"], self.predictions["DFT_Boltzmann_Pred"]),2))
+        print("Yates MAE:", round(mean_absolute_error(self.predictions["Pred"], self.predictions["Yates"]),2))
+        print("DFT r2:", round(r2_score(self.predictions["Pred"], self.predictions["Target"]),2))
+        print("DFT Boltzmann r2:", round(r2_score(self.predictions["Pred"], self.predictions["DFT_Boltzmann_Pred"]),2))
+        print("Yates r2:", round(r2_score(self.predictions["Pred"], self.predictions["Yates"]),2))
+    
+    def DFT_crest_calc(self, path_to_files: str):
+        files = glob.glob(path_to_files)
+        self.crest_conformers = {}
+        for file in files:
+            filename = file.split("/")[-1]
+            parts = filename.split('_')
+            molecule = parts[0]
+            state = parts[1] + '_' + parts[2]
+            conf = int(parts[3].split(".")[0]) - 1
+            if molecule not in self.crest_conformers:
+                self.crest_conformers[molecule] = {}
+            if state not in self.crest_conformers[molecule]:
+               self.crest_conformers[molecule][state] = {}
+            self.crest_conformers[molecule][state][conf] = {'orca_parse': orca_parser.ORCAParse(file)}
+            self.crest_conformers[molecule][state][conf]['orca_parse'].parse_free_energy()
+            self.crest_conformers[molecule][state][conf]['DFT G'] = self.crest_conformers[molecule][state][conf]['orca_parse'].Gibbs * 627.5095
+            self.crest_conformers[molecule][state][conf]['ase'] = self.crest_conformers[molecule][state][conf]['orca_parse'].asemol
+            self.crest_conformers[molecule][state][conf]['conf'] = conf
+
+        for idx in [1,2,3,4,5,6,7,8,9,10,11]:
+            self.DFT_probable_conformers = {'prot_aq': {}, 'deprot_aq': {}}
+            for state in ['prot_aq', 'deprot_aq']:
+                self.DFT_probable_conformers[state] = x.post_opt_filtering(idx, state, opt=False)
+                
+            self.calculate_weighted_pka(self.DFT_probable_conformers, idx, DFT_crest=True)
         
     def __init__(self):
         self.G_H = -4.39 # kcal/mol
-        self.dG_solv_H = -264.61 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
+        self.dG_solv_H = -264.6 # kcal/mol (Liptak et al., J M Chem Soc 2021)    
         self.mol_indices = [1,2,3,4,5,6,7,8,9,10,11]
         self.pKas = pandas.read_csv(os.path.join(os.path.dirname(__file__), "DFT_Data_pKa.csv"), index_col=0)
+        self.additional_pKas = pandas.read_csv(os.path.join(os.path.dirname(__file__), "DFT_Data_additional_pKa.csv"), index_col=0)
         self.radii = pandas.read_csv(os.path.join(os.path.dirname(__file__), "Alvarez2013_vdwradii.csv"), index_col=0)
         self.PM7 = pandas.read_csv(os.path.join(os.path.dirname(__file__), "PM7_Data_pKa.csv"), index_col=0)
         self.Boltzmann_data = {}
@@ -495,23 +593,41 @@ class pKa:
 
 if __name__ == "__main__":
     
+    start = time.time()
+    
     x = pKa()
     #x.load_models("TrainDNN/model/", "best.pt"); x.work_folder = "Calculations/MSE"
-    x.load_models("TrainDNN/models/uncleaned/", "best_L1.pt"); x.work_folder = "Calculations/Boltzmann_normalized_FIRE"
+    x.load_models("TrainDNN/models/Final_model_set/", "best_L1.pt"); x.work_folder = "Calculations/Test_2_models_time_trial"
     os.makedirs(x.work_folder, exist_ok=True)
     print(x.Gmodels)
     assert "prot_aq" in x.Gmodels
     x.load_yates()
     x.use_yates_structures()
+    # x.load_alternate('Complete_DFT_Outs/**/lys*.out')
     x.load_PM7()
-
-        
-    x.load_filter_confs([1,2,3,4,5,6,7,8,9,10,11], "Crest_Avogadro_Confs/")
-
+# =============================================================================
+#     direct_full_cycle = []
+#     for idx in [1,2,3,4,5,6,7,8,9,10,11]:
+#         pKa = x.calc_pKa_full_cycle(idx)
+#         direct_full_cycle.append(pKa)
+#         x.predictions.at[idx, 'Gas Full Cycle'] = pKa
+# =============================================================================
+    # states=['prot_aq', 'deprot_aq', 'prot_gas', 'deprot_gas']
+    states=['prot_aq', 'deprot_aq']
+    # sys.exit()    
+    # x.load_filter_confs([1,2,3,4,5,6,7,8,9,10,11], "Crest_Avogadro_Confs/")
+    x.load_filter_confs([1,2,3,4,5,6,7,8,9,10,11], "Crest_Avogadro_Confs/", states)
+    # sys.exit()
     for idx in [1,2,3,4,5,6,7,8,9,10,11]:
-        probable_conformers = {'prot_aq': {}, 'deprot_aq': {}}
-        for state in ['prot_aq', 'deprot_aq']:
+        if len(states) == 4:
+            probable_conformers = {'prot_aq': {}, 'deprot_aq': {}, 'prot_gas': {}, 'deprot_gas': {}}
+        if len(states) == 2:
+            probable_conformers = {'prot_aq': {}, 'deprot_aq': {}}
+        for state in states:
             probable_conformers[state] = x.post_opt_filtering(idx, state)
             
         x.calculate_weighted_pka(probable_conformers, idx)
+    x.DFT_crest_calc('/users/bwb16179/postgrad/2024_03/DFT_Crest_Conformers/finished_DFT_crest_mols_Opt/*.out')
     x.print_results()
+    end = time.time()
+    print(end - start)
