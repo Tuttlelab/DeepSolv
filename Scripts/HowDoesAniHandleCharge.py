@@ -34,7 +34,7 @@ def get_color_gradient(value, min_value, max_value):
     position = (value - min_value) / (max_value - min_value)
     
     # Define start (green) and end (red) colors
-    green = Color("green")
+    green = Color("orange")
     red = Color("blue")
     
     # Create a color gradient between green and red
@@ -46,14 +46,14 @@ def get_color_gradient(value, min_value, max_value):
     return selected_color.rgb
 
 
-
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 device = torch.device("cpu")
 
 
 state = "Gas"
 
 # Load Neutral model
-p = f"../TrainDNN/models/Final_model_set/{state}_Z=0_bs=2048"
+p = f"../TrainDNN/models/{state}_Z=0_bs=2048"
 self_energy = pathlib.Path(p, "Self_Energies.csv")
 training_config = pathlib.Path(p, "training_config.json")
 print("p:", p)
@@ -68,7 +68,7 @@ Neutral.load_checkpoint(str(pathlib.Path(p, "best_L1.pt")), typ="Energy")
 #Neutral.SwitchCalculator(0)
 
 # Load Charged model
-p = f"../TrainDNN/models/Final_model_set/{state}_Z=1_bs=2048"
+p = f"../TrainDNN/models/{state}_Z=1_bs=2048"
 self_energy = pathlib.Path(p, "Self_Energies.csv")
 training_config = pathlib.Path(p, "training_config.json")
 print("p:", p)
@@ -81,11 +81,13 @@ Charged = IrDNN(ChargedSelfE, verbose=False, device=device,training_config=train
 Charged.GenModel(species_order)
 Charged.load_checkpoint(str(pathlib.Path(p, "best_L1.pt")), typ="Energy")
 
-MAXVAL = 0
-#MAXVAL = 0.0558013916015625
+#MINVAL = 0
+#MAXVAL = 0
+#MAXVAL = 0.08625411987304688
 
 viz = open("HowDoesAniHandleCharge.xyz", 'w')
-for yates_i in range(1,12):
+#for yates_i in range(1,12):
+for yates_i in [8,11]:
     investigate = f"../Data/DFT/{yates_i}+.out"
     op = orca_parser.ORCAParse(investigate)
     op.parse_charges()
@@ -106,7 +108,7 @@ for yates_i in range(1,12):
         E = Neutral.nn((AEV.species[0,i].unsqueeze(0).unsqueeze(0), AEV.aevs[0,i].unsqueeze(0).unsqueeze(0)))
         Energies.at[i, "atom"] = mol.get_chemical_symbols()[i]
         Energies.at[i, "Neutral"] = E.energies.detach().numpy() + NeutralSelfE.at[mol.get_chemical_symbols()[i], "SelfEnergy"]
-    # Charged    
+    # Charged
     AEV = Charged.aev_computer((species, coordinates))
     for i in range(mol.positions.shape[0]):
         E = Charged.nn((AEV.species[0,i].unsqueeze(0).unsqueeze(0), AEV.aevs[0,i].unsqueeze(0).unsqueeze(0)))
@@ -114,6 +116,7 @@ for yates_i in range(1,12):
     
     Energies["d"] = Energies["Charged"] - Energies["Neutral"]
     Energies["Mulliken"] = op.charges["Mulliken"]
+    Energies = Energies.sort_values("d")
     print(Energies)
     plt.scatter(Energies["d"], Energies["Mulliken"])
     # Find the min max scale
@@ -121,31 +124,28 @@ for yates_i in range(1,12):
 #     max_value = MAXVAL
 #     min_value = -MAXVAL
 # =============================================================================
-    if Energies["d"].max() > abs(Energies["d"].min()):
-        max_value = abs(Energies["d"].max())
-        min_value = -Energies["d"].max()
-    else:
-        max_value = abs(Energies["d"].min())
-        min_value = Energies["d"].min()    
-    if max_value > MAXVAL:
-        MAXVAL = max_value
-    
+
+
     
     viz.write(f"{mol.positions.shape[0]}\n\n")
-    for i in range(mol.positions.shape[0]):
-        color = get_color_gradient(Energies.at[i, "d"], min_value, max_value)
+    #for i in range(mol.positions.shape[0]):
+    for i in Energies.index:
+        color = get_color_gradient(Energies.at[i, "d"], Energies["d"].min(), Energies["d"].max())
         viz.write(Energies.at[i, "atom"])
         viz.write("\t")
         viz.write("\t".join([str(x) for x in mol.positions[i]]))
         viz.write("\t")
         viz.write("\t".join([str(x) for x in color]))
         viz.write("\n")
+        print(Energies.at[i, "d"], [str(x) for x in color])
+
+    
         
 viz.close()
 
 print("Green = more negative G value")
 print("blue = more positive G value")
-print("Global maxval:", MAXVAL)
+#print("Global maxval:", MAXVAL)
 
 
 
